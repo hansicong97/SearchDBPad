@@ -1,0 +1,9 @@
+node_modules
+dist
+release
+build
+!build/installer.nsh
+.DS_Store
+*.log
+.vscode
+.idea

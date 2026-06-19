@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite:*)",
+      "Bash(npm run:*)",
+      "Bash(curl -s http://localhost:5173)",
+      "Bash(xargs grep:*)",
+      "Bash(rm:*)",
+      "Bash(find \"D:\\\\AIWorkspace\\\\claudecode\\\\tools\\\\ESDataProcessing\\\\node_modules\\\\app-builder-lib\\\\templates\\\\nsis\" -name \"*.nsh\" -exec grep -l \"customDelete\\\\|DeleteAppData\\\\|deleteAppData\" {} \\\\;)",
+      "Bash(where makensis:*)"
+    ]
+  }
+}

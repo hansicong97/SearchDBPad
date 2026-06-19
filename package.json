@@ -1,0 +1,90 @@
+{
+  "name": "es-desktop-client",
+  "version": "0.1.0",
+  "description": "Elasticsearch desktop management tool - Phase 10 packaging",
+  "main": "dist/main/index.js",
+  "author": "ES Desktop Client",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -k -n VITE,ELECTRON -c blue,green \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:electron": "wait-on http://localhost:5173 && tsc -p tsconfig.main.json && cross-env NODE_ENV=development electron .",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build": "npm run build:main && npm run build:renderer",
+    "start": "cross-env NODE_ENV=production electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.main.json --noEmit",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:portable": "npm run build && electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.esdesktop.client",
+    "productName": "ES Desktop Client",
+    "copyright": "Copyright © 2026 ES Desktop Client",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "node_modules/**/*",
+      "!**/*.{md,markdown,map}",
+      "!**/.DS_Store",
+      "!**/.editorconfig",
+      "!**/.gitignore",
+      "!**/.gitattributes",
+      "!**/tsconfig*.json",
+      "!**/vite.config.ts"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "include": "build/installer.nsh",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ES Desktop Client",
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    },
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    }
+  },
+  "dependencies": {
+    "@elastic/elasticsearch": "^8.15.0",
+    "@monaco-editor/react": "^4.6.0",
+    "antd": "^5.21.0",
+    "electron-store": "^8.2.0",
+    "monaco-editor": "^0.52.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.10",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "concurrently": "^9.0.1",
+    "cross-env": "^7.0.3",
+    "electron": "^32.1.2",
+    "electron-builder": "^25.0.5",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8",
+    "wait-on": "^8.0.1"
+  }
+}

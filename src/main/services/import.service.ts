@@ -1,0 +1,457 @@
+/**
+ * Import service (phase 9).
+ *
+ * Runs in the Electron main process — the only place allowed to talk to
+ * Elasticsearch and to read arbitrary user files. Phase 9 scope:
+ *
+ *   - Parse JSON array / NDJSON (Bulk + plain) / CSV files.
+ *   - Preview the first N rows without doing the full Bulk request.
+ *   - Execute via `POST /_bulk` in batches of `BULK_BATCH_SIZE`.
+ *   - Aggregate success / failure counts and the first N failures.
+ *
+ * The renderer never sees the filesystem. All file IO happens here.
+ */
+
+import { promises as fs } from 'node:fs'
+import { buildEsClient, resolveConnection } from './esClient'
+import type {
+  ApiResponse,
+  ImportExecuteRequest,
+  ImportExecuteResult,
+  ImportFailure,
+  ImportFormat,
+  ImportPreviewRequest,
+  ImportPreviewResult,
+  ImportPreviewRow
+} from '../../shared/ipc'
+
+/** Bulk batch size. ES tolerates much larger (5-15 MB worth), but small
+ *  batches keep partial-failure surfaces small and timeouts predictable. */
+const BULK_BATCH_SIZE = 1000
+
+/** Cap on the per-row raw text we echo back in `ImportFailure.raw`. */
+const RAW_FAILURE_PREVIEW = 500
+
+/** Cap on the failures array we return to the renderer — the user only
+ *  needs enough context to debug, not every error from a 50k row file. */
+const FAILURES_LIMIT = 20
+
+/* ------------------- File format helpers ------------------- */
+
+interface ParsedRow {
+  id?: string
+  source: Record<string, unknown>
+  raw?: string
+}
+
+interface ParsedFile {
+  /** All rows, fully materialized (Bulk requires we send them in order
+   *  so we cannot stream through them). For a 10000-row file this is
+   *  fine; if the file is huge we can revisit with streaming Bulk. */
+  rows: ParsedRow[]
+  warnings: string[]
+}
+
+/** Detect format from extension. Caller may override via `format` arg. */
+function detectFormat(filePath: string): ImportFormat | null {
+  const lower = filePath.toLowerCase()
+  if (lower.endsWith('.json')) return 'json'
+  if (lower.endsWith('.ndjson')) return 'ndjson'
+  if (lower.endsWith('.csv')) return 'csv'
+  return null
+}
+
+/** Strip UTF-8 BOM if present at the start of the buffer. */
+function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+}
+
+/** Split non-empty lines, preserving the original text for failure
+ *  reporting. Trailing empty lines are dropped. */
+function splitLines(text: string): string[] {
+  return text.split(/\r?\n/).filter((l) => l.length > 0)
+}
+
+/** True when the line is a Bulk action metadata line. NDJSON Bulk files
+ *  alternate such lines with source lines. Note: while the parser accepts
+ *  `index` / `create` / `update` / `delete` here, `runImport` currently
+ *  re-emits every row as an `index` action — `create` / `update` /
+ *  `delete` semantics are NOT preserved on the way out. `delete` lines
+ *  (which carry no source body) will fail to parse at all. */
+function isBulkActionLine(obj: unknown): obj is Record<string, unknown> {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false
+  const keys = Object.keys(obj)
+  if (keys.length !== 1) return false
+  const k = keys[0]
+  return k === 'index' || k === 'create' || k === 'update' || k === 'delete'
+}
+
+/** Minimal RFC 4180 CSV parser. Handles quoted fields with embedded
+ *  commas / newlines / quotes. Returns one record per non-empty line. */
+function parseCsv(text: string): { rows: ParsedRow[]; warning?: string } {
+  const rows: string[][] = []
+  let i = 0
+  const len = text.length
+  let field = ''
+  let row: string[] = []
+  let inQuotes = false
+  while (i < len) {
+    const ch = text[i]
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          field += '"'
+          i += 2
+          continue
+        }
+        inQuotes = false
+        i++
+        continue
+      }
+      field += ch
+      i++
+      continue
+    }
+    if (ch === '"') {
+      inQuotes = true
+      i++
+      continue
+    }
+    if (ch === ',') {
+      row.push(field)
+      field = ''
+      i++
+      continue
+    }
+    if (ch === '\r') {
+      // Treat \r\n or lone \r as a row terminator.
+      if (text[i + 1] === '\n') i++
+      row.push(field)
+      rows.push(row)
+      row = []
+      field = ''
+      i++
+      continue
+    }
+    if (ch === '\n') {
+      row.push(field)
+      rows.push(row)
+      row = []
+      field = ''
+      i++
+      continue
+    }
+    field += ch
+    i++
+  }
+  // Flush the last field/row if the file does not end with a newline.
+  if (field.length > 0 || row.length > 0) {
+    row.push(field)
+    rows.push(row)
+  }
+
+  if (rows.length === 0) return { rows: [] }
+
+  const headers = rows[0]
+  const out: ParsedRow[] = []
+  for (let r = 1; r < rows.length; r++) {
+    const cols = rows[r]
+    // Skip blank rows (e.g. trailing empty line that survived the split).
+    if (cols.length === 1 && cols[0] === '') continue
+    const source: Record<string, unknown> = {}
+    for (let c = 0; c < headers.length; c++) {
+      source[headers[c]] = cols[c] ?? ''
+    }
+    out.push({ source, raw: rows[r].join(',') })
+  }
+  return {
+    rows: out,
+    warning:
+      headers.length > 0 && rows.length > 1
+        ? undefined
+        : 'CSV 只有表头没有数据行'
+  }
+}
+
+/** Parse a JSON array file. Supports both `[{_id, _source}]` and
+ *  plain `[{...}]` shapes; mixed shapes are tolerated by treating any
+ *  top-level non-`_id` / non-`_source` key as part of the source. */
+function parseJsonArray(text: string): ParsedFile {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (err) {
+    throw new Error(
+      `JSON 解析失败：${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('JSON 文件顶层必须是数组')
+  }
+  const rows: ParsedRow[] = parsed.map((item, idx) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`第 ${idx + 1} 项不是对象`)
+    }
+    const obj = item as Record<string, unknown>
+    if ('_source' in obj && obj._source && typeof obj._source === 'object') {
+      return {
+        id: typeof obj._id === 'string' ? obj._id : undefined,
+        source: obj._source as Record<string, unknown>,
+        raw: JSON.stringify(obj)
+      }
+    }
+    // Plain object — whole thing is the source.
+    return {
+      id: typeof obj._id === 'string' ? obj._id : undefined,
+      source: obj,
+      raw: JSON.stringify(obj)
+    }
+  })
+  return { rows, warnings: [] }
+}
+
+/** Parse an NDJSON file. Supports both Bulk-format (alternating
+ *  action + source lines) and plain-document format (one source per
+ *  line). Auto-detected from the first non-empty line. */
+function parseNdjson(text: string): ParsedFile {
+  const lines = splitLines(text)
+  if (lines.length === 0) return { rows: [], warnings: [] }
+
+  let firstParsed: unknown
+  try {
+    firstParsed = JSON.parse(lines[0])
+  } catch (err) {
+    throw new Error(
+      `NDJSON 第 1 行解析失败：${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+  const bulkFormat = isBulkActionLine(firstParsed)
+
+  const rows: ParsedRow[] = []
+  const warnings: string[] = []
+  if (bulkFormat) {
+    let i = 0
+    while (i < lines.length) {
+      const actionLine = lines[i]
+      let action: Record<string, unknown>
+      try {
+        action = JSON.parse(actionLine) as Record<string, unknown>
+      } catch (err) {
+        throw new Error(
+          `NDJSON 第 ${i + 1} 行（action）解析失败：${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+      }
+      const sourceLine = lines[i + 1]
+      if (sourceLine === undefined) {
+        throw new Error(`NDJSON 第 ${i + 1} 行（action）缺少对应的 source 行`)
+      }
+      let source: Record<string, unknown>
+      try {
+        source = JSON.parse(sourceLine) as Record<string, unknown>
+      } catch (err) {
+        throw new Error(
+          `NDJSON 第 ${i + 2} 行（source）解析失败：${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+      }
+      const actionMeta = (action.index ?? action.create ?? action.update ?? action.delete) as
+        | Record<string, unknown>
+        | undefined
+      const id = actionMeta && typeof actionMeta._id === 'string' ? actionMeta._id : undefined
+      rows.push({ id, source, raw: `${actionLine}\n${sourceLine}` })
+      i += 2
+    }
+  } else {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      try {
+        const obj = JSON.parse(line) as Record<string, unknown>
+        rows.push({ source: obj, raw: line })
+      } catch (err) {
+        throw new Error(
+          `NDJSON 第 ${i + 1} 行解析失败：${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+      }
+    }
+    if (lines.length >= 2) {
+      warnings.push(
+        'NDJSON 检测为纯文档格式（每行一个文档），_id 将由 Elasticsearch 自动生成'
+      )
+    }
+  }
+  return { rows, warnings }
+}
+
+async function readAndParse(
+  filePath: string,
+  format: ImportFormat
+): Promise<ParsedFile> {
+  const text = stripBom(await fs.readFile(filePath, 'utf8'))
+  if (format === 'csv') {
+    const { rows, warning } = parseCsv(text)
+    return { rows, warnings: warning ? [warning] : [] }
+  }
+  if (format === 'json') {
+    // `JSON.parse` fails fast on a single line of NDJSON content, so we
+    // can safely assume `parseJsonArray` will catch a NDJSON-misnamed
+    // file. If the file content looks like NDJSON (first non-whitespace
+    // is `{` and there are multiple JSON objects per line), surface a
+    // warning so the user knows they probably want `ndjson` instead.
+    const warnings: string[] = []
+    if (text.trimStart().startsWith('{') && /\r?\n\s*\{/.test(text)) {
+      warnings.push(
+        'JSON 文件看起来像 NDJSON（多行 JSON 对象），建议改用 NDJSON 格式'
+      )
+    }
+    const parsed = parseJsonArray(text)
+    return { rows: parsed.rows, warnings: [...warnings, ...parsed.warnings] }
+  }
+  return parseNdjson(text)
+}
+
+/* ------------------- Preview + execute ------------------- */
+
+export async function importPreview(
+  req: ImportPreviewRequest
+): Promise<ApiResponse<ImportPreviewResult>> {
+  try {
+    const parsed = await readAndParse(req.filePath, req.format)
+    const preview: ImportPreviewRow[] = parsed.rows.slice(0, req.maxRows).map(
+      (r): ImportPreviewRow => ({
+        id: r.id,
+        source: r.source,
+        raw: r.raw
+      })
+    )
+    return {
+      success: true,
+      data: {
+        format: req.format,
+        totalRows: parsed.rows.length,
+        rows: preview,
+        warnings: parsed.warnings
+      }
+    }
+  } catch (err) {
+    return {
+      success: false,
+      error: {
+        message: err instanceof Error ? err.message : String(err)
+      }
+    }
+  }
+}
+
+interface BulkItemResponse {
+  index?: {
+    _id?: string
+    status?: number
+    error?: { type?: string; reason?: string }
+  }
+}
+
+interface BulkResponseShape {
+  errors?: boolean
+  items?: BulkItemResponse[]
+}
+
+function truncate(s: string | undefined, n: number): string | undefined {
+  if (s === undefined) return undefined
+  return s.length <= n ? s : s.slice(0, n) + '…'
+}
+
+export async function runImport(
+  req: ImportExecuteRequest
+): Promise<ApiResponse<ImportExecuteResult>> {
+  const { connectionId, index, filePath, format } = req
+  try {
+    const parsed = await readAndParse(filePath, format)
+    const total = parsed.rows.length
+    if (total === 0) {
+      return {
+        success: true,
+        data: {
+          connectionId,
+          index,
+          format,
+          total: 0,
+          success: 0,
+          failed: 0,
+          failures: []
+        }
+      }
+    }
+    const conn = resolveConnection(connectionId)
+    const client = buildEsClient(conn)
+
+    let success = 0
+    let failed = 0
+    const failures: ImportFailure[] = []
+
+    for (let start = 0; start < total; start += BULK_BATCH_SIZE) {
+      const batch = parsed.rows.slice(start, start + BULK_BATCH_SIZE)
+      const operations: Record<string, unknown>[] = []
+      for (const row of batch) {
+        const action: Record<string, unknown> = { _index: index }
+        if (row.id !== undefined) action._id = row.id
+        operations.push({ index: action })
+        operations.push(row.source)
+      }
+      const response = (await client.bulk({
+        refresh: false,
+        operations: operations as unknown as Parameters<typeof client.bulk>[0] extends infer R
+          ? R extends { operations?: infer O }
+            ? O
+            : never
+          : never
+      })) as unknown as BulkResponseShape
+
+      const items = Array.isArray(response.items) ? response.items : []
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        const op = item.index
+        if (op && op.error) {
+          failed++
+          if (failures.length < FAILURES_LIMIT) {
+            failures.push({
+              line: start + i,
+              id: typeof op._id === 'string' ? op._id : undefined,
+              error:
+                op.error.reason ?? op.error.type ?? 'Bulk 项失败（未知原因）',
+              raw: truncate(batch[i].raw, RAW_FAILURE_PREVIEW)
+            })
+          }
+        } else {
+          success++
+        }
+      }
+    }
+
+    return {
+      success: true,
+      data: {
+        connectionId,
+        index,
+        format,
+        total,
+        success,
+        failed,
+        failures
+      }
+    }
+  } catch (err) {
+    return {
+      success: false,
+      error: {
+        message: err instanceof Error ? err.message : String(err)
+      }
+    }
+  }
+}
+
+export { detectFormat }
