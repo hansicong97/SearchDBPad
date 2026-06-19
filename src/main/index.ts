@@ -34,6 +34,8 @@ import {
 } from './services/connection.service'
 import { getClusterHealth, getClusterInfo } from './services/cluster.service'
 import {
+  createIndex,
+  deleteIndex,
   getIndexMapping,
   getIndexSettings,
   listIndices
@@ -66,7 +68,7 @@ function createWindow(): BrowserWindow {
     minHeight: 600,
     show: false,
     backgroundColor: '#f5f5f5',
-    title: 'ES Desktop Client',
+    title: 'SearchDBPad',
     webPreferences: {
       // Security: required by phase 1 spec, must remain on in every phase.
       contextIsolation: true,
@@ -140,6 +142,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IpcChannels.IndexSettings, (_evt, req) =>
     getIndexSettings(req.connectionId, req.index)
   )
+
+  /* Index management (phase 13) */
+  ipcMain.handle(IpcChannels.IndexCreate, (_evt, req) => createIndex(req))
+  ipcMain.handle(IpcChannels.IndexDelete, (_evt, req) => deleteIndex(req))
 
   /* Document search (phase 5) */
   ipcMain.handle(IpcChannels.DocumentSearch, (_evt, req) =>

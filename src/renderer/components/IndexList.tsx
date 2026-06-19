@@ -1,5 +1,5 @@
 /**
- * Index list (phase 3 + 4).
+ * Index list (phase 3 + 4 + index ops in 13).
  *
  * Displays indices returned by `GET /_cat/indices?format=json&bytes=b`.
  * Columns:
@@ -16,14 +16,36 @@
  * (no extra ES round-trips). Clicking a row invokes `onSelect`; the
  * parent (WorkspacePage) is responsible for switching to the index
  * detail view.
+ *
+ * Phase 13 (version update plan):
+ *   - The search / refresh / count row is rendered in a fixed header
+ *     strip so it stays visible while the table scrolls.
+ *   - The "新建索引" button opens the CreateIndexModal.
+ *   - Per-row actions include a delete confirmation popover.
  */
 
 import { useMemo, useState } from 'react'
-import { Input, Space, Table, Tag, Tooltip, Typography } from 'antd'
+import {
+  App as AntdApp,
+  Button,
+  Input,
+  Popconfirm,
+  Space,
+  Table,
+  Tag,
+  Tooltip,
+  Typography
+} from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { SearchOutlined } from '@ant-design/icons'
+import {
+  DeleteOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SearchOutlined
+} from '@ant-design/icons'
 import { useWorkspaceStore } from '../stores/workspace.store'
 import type { EsIndexInfo } from '@shared/ipc'
+import CreateIndexModal from './CreateIndexModal'
 
 const { Text } = Typography
 
@@ -64,12 +86,19 @@ interface Props {
 }
 
 export default function IndexList({ onSelect }: Props): JSX.Element {
+  const { message } = AntdApp.useApp()
   const indices = useWorkspaceStore((s) => s.indices)
   const loading = useWorkspaceStore((s) => s.indicesLoading)
   const error = useWorkspaceStore((s) => s.indicesError)
   const totalCount = useWorkspaceStore((s) => s.indexCount)
+  const fetchIndices = useWorkspaceStore((s) => s.fetchIndices)
+  const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
+  const deleteIndex = useWorkspaceStore((s) => s.deleteIndex)
+  const selectIndex = useWorkspaceStore((s) => s.selectIndex)
 
   const [keyword, setKeyword] = useState('')
+  const [createOpen, setCreateOpen] = useState(false)
+  const [deletingName, setDeletingName] = useState<string | null>(null)
 
   const filtered = useMemo<EsIndexInfo[]>(() => {
     const q = keyword.trim().toLowerCase()
@@ -144,51 +173,143 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
       key: 'rep',
       width: 80,
       align: 'right'
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 100,
+      fixed: 'right',
+      render: (_v, record) => (
+        <Popconfirm
+          title={`确定删除索引 "${record.index}" ？`}
+          description="删除操作不可恢复，索引数据将永久丢失。"
+          okText="删除"
+          okButtonProps={{ danger: true }}
+          cancelText="取消"
+          onConfirm={async (e) => {
+            e?.stopPropagation()
+            if (!activeConnectionId) return
+            setDeletingName(record.index)
+            try {
+              const res = await deleteIndex({
+                connectionId: activeConnectionId,
+                index: record.index
+              })
+              if (res) {
+                message.success(`已删除索引 "${record.index}"`)
+              }
+            } finally {
+              setDeletingName(null)
+            }
+          }}
+          onCancel={(e) => e?.stopPropagation()}
+        >
+          <Button
+            type="text"
+            danger
+            size="small"
+            icon={<DeleteOutlined />}
+            loading={deletingName === record.index}
+            onClick={(e) => e.stopPropagation()}
+          >
+            删除
+          </Button>
+        </Popconfirm>
+      )
     }
   ]
 
   return (
-    <div>
-      <Space style={{ marginBottom: 12 }} size="middle">
-        <Input
-          allowClear
-          prefix={<SearchOutlined />}
-          placeholder="按索引名搜索"
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
-          style={{ width: 260 }}
-        />
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          {keyword
-            ? `匹配 ${filtered.length} / ${totalCount}`
-            : `共 ${totalCount} 个索引`}
-        </Text>
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          · 点击行查看 Mapping / Settings
-        </Text>
-      </Space>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        minHeight: 0,
+        background: '#fff',
+        borderRadius: 6,
+        border: '1px solid #f0f0f0',
+        overflow: 'hidden'
+      }}
+    >
+      <div
+        style={{
+          flex: '0 0 auto',
+          padding: '12px 16px',
+          borderBottom: '1px solid #f0f0f0',
+          background: '#fafafa'
+        }}
+      >
+        <Space size="middle" wrap>
+          <Input
+            allowClear
+            prefix={<SearchOutlined />}
+            placeholder="按索引名搜索"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            style={{ width: 260 }}
+          />
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => setCreateOpen(true)}
+          >
+            新建索引
+          </Button>
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={() => {
+              if (activeConnectionId) void fetchIndices(activeConnectionId)
+            }}
+            loading={loading}
+          >
+            刷新
+          </Button>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {keyword
+              ? `匹配 ${filtered.length} / ${totalCount}`
+              : `共 ${totalCount} 个索引`}
+          </Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            · 点击行查看详情
+          </Text>
+        </Space>
+      </div>
 
-      {error ? (
-        <Text type="danger">无法加载索引列表：{error}</Text>
-      ) : (
-        <Table<EsIndexInfo>
-          rowKey="index"
-          columns={columns}
-          dataSource={filtered}
-          loading={loading}
-          size="middle"
-          onRow={(record) => ({
-            onClick: () => onSelect(record.index),
-            style: { cursor: 'pointer' }
-          })}
-          pagination={{
-            showSizeChanger: true,
-            defaultPageSize: 20,
-            pageSizeOptions: [10, 20, 50, 100],
-            showTotal: (t) => `共 ${t} 条`
-          }}
-        />
-      )}
+      <div style={{ flex: '1 1 auto', minHeight: 0, overflow: 'auto' }}>
+        {error ? (
+          <div style={{ padding: 16 }}>
+            <Text type="danger">无法加载索引列表：{error}</Text>
+          </div>
+        ) : (
+          <Table<EsIndexInfo>
+            rowKey="index"
+            columns={columns}
+            dataSource={filtered}
+            loading={loading}
+            size="middle"
+            scroll={{ x: 'max-content' }}
+            onRow={(record) => ({
+              onClick: () => onSelect(record.index),
+              style: { cursor: 'pointer' }
+            })}
+            pagination={{
+              showSizeChanger: true,
+              defaultPageSize: 20,
+              pageSizeOptions: [10, 20, 50, 100],
+              showTotal: (t) => `共 ${t} 条`
+            }}
+          />
+        )}
+      </div>
+
+      <CreateIndexModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={(name) => {
+          selectIndex(name)
+        }}
+      />
     </div>
   )
 }

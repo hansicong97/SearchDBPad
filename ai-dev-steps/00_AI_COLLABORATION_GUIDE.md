@@ -1,6 +1,6 @@
 # AI 开发协作总说明
 
-本目录用于指导 AI 按照 `ES_DESKTOP_CLIENT_PLAN.md` 分阶段开发 Elasticsearch 桌面管理工具。
+本目录用于指导 AI 按照 `ES_DESKTOP_CLIENT_PLAN.md` 分阶段开发 SearchDBPad。当前阶段以 Elasticsearch 功能为主，长期方向是支持 Solr 等主流搜索引擎。
 
 ## 使用方式
 

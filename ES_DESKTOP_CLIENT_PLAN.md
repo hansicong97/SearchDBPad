@@ -1,8 +1,12 @@
-# Elasticsearch 桌面管理工具开发计划
+# SearchDBPad 开发计划
 
 ## 1. 项目目标
 
-本项目计划开发一个类似 **Navicat 之于 MySQL** 的 Elasticsearch 操作软件，第一阶段以简单、实用、可迭代为目标。
+本项目计划开发 SearchDBPad：一个面向搜索引擎数据管理的桌面客户端。
+
+当前阶段优先支持 Elasticsearch，先完成连接管理、索引浏览、文档查询、文档维护、数据导入导出等基础能力。
+
+长期目标是支持 Elasticsearch、Solr 等主流搜索引擎，并通过统一的桌面交互降低日常数据管理、查询和维护成本。
 
 核心目标：
 
@@ -15,7 +19,7 @@
 - 优先做 Windows 桌面客户端
 - 技术栈尽量选择 Node.js / Java / Go 中适合 AI 辅助开发的方案
 
-第一版不追求替代 Kibana，而是做一个轻量、直观、开发者友好的 Elasticsearch 数据操作工具。
+第一版不追求替代 Kibana，而是做一个轻量、直观、开发者友好的桌面客户端，聚焦数据操作场景。
 
 ---
 
@@ -23,15 +27,14 @@
 
 产品定位：
 
-> 一个面向开发者、测试人员、数据处理人员的 Elasticsearch 桌面管理工具，用于完成日常连接管理、索引浏览、数据查询、文档维护和数据导入导出。
+> SearchDBPad 是一个面向开发者、测试人员、数据处理人员的搜索引擎桌面管理工具。当前版本聚焦 Elasticsearch，用于完成日常连接管理、索引浏览、数据查询、文档维护和数据导入导出；后续将扩展支持 Solr 等主流搜索引擎。
 
-类似产品参考：
+## 设计原则
 
-- Navicat for MySQL
-- RedisInsight
-- MongoDB Compass
-- Postman
-- Kibana Dev Tools
+- 桌面端优先，降低内网与本地环境使用成本。
+- 操作路径清晰，优先覆盖高频数据管理任务。
+- 当前实现聚焦 Elasticsearch，不提前暴露未完成的多引擎能力。
+- 服务层逐步向 adapter/provider 结构演进，为后续 Solr 等搜索引擎接入预留空间。
 
 本项目第一阶段重点不做复杂集群运维，而是聚焦数据操作。
 
@@ -57,7 +60,7 @@ Electron + React + TypeScript + Node.js
 | 构建工具 | Vite |
 | UI 组件库 | Ant Design |
 | 状态管理 | Zustand |
-| ES 客户端 | @elastic/elasticsearch |
+| Elasticsearch 客户端 | @elastic/elasticsearch |
 | JSON 编辑器 | Monaco Editor |
 | 表格组件 | Ant Design Table / TanStack Table |
 | 本地配置存储 | electron-store |
@@ -210,7 +213,7 @@ App
 ### 5.2 推荐目录结构
 
 ```text
-es-desktop-client/
+searchdbpad/
 ├── package.json
 ├── vite.config.ts
 ├── tsconfig.json
@@ -1712,6 +1715,10 @@ AI 生成 DSL
 完整使用文档
 基础 ES 数据管理闭环
 ```
+
+### 长期方向：多搜索引擎支持
+
+当前版本以 Elasticsearch 为第一目标。后续版本可在稳定现有功能后，引入搜索引擎适配层，将连接、集群信息、索引/集合浏览、查询、导入导出等能力逐步抽象为 provider 接口，再接入 Solr 等主流搜索引擎。
 
 ---
 

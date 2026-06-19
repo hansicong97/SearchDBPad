@@ -53,7 +53,9 @@ interface ParsedFile {
 }
 
 /** Detect format from extension. Caller may override via `format` arg. */
-function detectFormat(filePath: string): ImportFormat | null {
+function detectFormat(
+  filePath: string
+): Exclude<ImportFormat, 'auto'> | null {
   const lower = filePath.toLowerCase()
   if (lower.endsWith('.json')) return 'json'
   if (lower.endsWith('.ndjson')) return 'ndjson'
@@ -320,7 +322,9 @@ export async function importPreview(
   req: ImportPreviewRequest
 ): Promise<ApiResponse<ImportPreviewResult>> {
   try {
-    const parsed = await readAndParse(req.filePath, req.format)
+    // Resolve `auto` to the extension-derived format before parsing.
+    const format = resolveFormat(req.filePath, req.format)
+    const parsed = await readAndParse(req.filePath, format)
     const preview: ImportPreviewRow[] = parsed.rows.slice(0, req.maxRows).map(
       (r): ImportPreviewRow => ({
         id: r.id,
@@ -331,7 +335,7 @@ export async function importPreview(
     return {
       success: true,
       data: {
-        format: req.format,
+        format,
         totalRows: parsed.rows.length,
         rows: preview,
         warnings: parsed.warnings
@@ -365,20 +369,80 @@ function truncate(s: string | undefined, n: number): string | undefined {
   return s.length <= n ? s : s.slice(0, n) + '…'
 }
 
+/** Resolve `format='auto'` to the format inferred from the file's
+ *  extension. Falls back to `json` when the extension is unknown — this
+ *  is the historical behavior of the picker, but on the import path
+ *  we want a deterministic answer, so the renderer should normally
+ *  pick something other than `auto` for the execute step. */
+function resolveFormat(
+  filePath: string,
+  format: ImportFormat
+): Exclude<ImportFormat, 'auto'> {
+  if (format !== 'auto') return format
+  const detected = detectFormat(filePath)
+  return detected ?? 'json'
+}
+
+/** In `replace` mode, wipe the index's existing docs first via
+ *  `_delete_by_query`. Failures here MUST short-circuit the import —
+ *  the plan calls this out explicitly to avoid partial success. */
+async function clearIndexForReplace(
+  client: ReturnType<typeof buildEsClient>,
+  index: string
+): Promise<void> {
+  await client.deleteByQuery({
+    index,
+    body: { query: { match_all: {} } },
+    refresh: true,
+    conflicts: 'proceed'
+  })
+}
+
 export async function runImport(
   req: ImportExecuteRequest
 ): Promise<ApiResponse<ImportExecuteResult>> {
-  const { connectionId, index, filePath, format } = req
+  const { connectionId, index, filePath, format, mode } = req
   try {
-    const parsed = await readAndParse(filePath, format)
+    const resolvedFormat = resolveFormat(filePath, format)
+    const parsed = await readAndParse(filePath, resolvedFormat)
     const total = parsed.rows.length
+
+    const conn = resolveConnection(connectionId)
+    const client = buildEsClient(conn)
+
+    // `replace` → clear existing docs first. A failure here must NOT
+    // proceed to bulk; surface the error to the caller.
+    if (mode === 'replace' && total > 0) {
+      try {
+        await clearIndexForReplace(client, index)
+      } catch (err) {
+        return {
+          success: false,
+          error: {
+            message: `清空索引 "${index}" 失败：${
+              err instanceof Error ? err.message : String(err)
+            }`
+          }
+        }
+      }
+    }
+
     if (total === 0) {
+      // Still refresh in replace mode so an empty import shows up
+      // immediately. Best-effort: ignore refresh errors.
+      if (mode === 'replace') {
+        try {
+          await client.indices.refresh({ index })
+        } catch {
+          /* ignore */
+        }
+      }
       return {
         success: true,
         data: {
           connectionId,
           index,
-          format,
+          format: resolvedFormat,
           total: 0,
           success: 0,
           failed: 0,
@@ -386,8 +450,6 @@ export async function runImport(
         }
       }
     }
-    const conn = resolveConnection(connectionId)
-    const client = buildEsClient(conn)
 
     let success = 0
     let failed = 0
@@ -432,12 +494,20 @@ export async function runImport(
       }
     }
 
+    // Refresh the target index so the next UI _search sees the new
+    // docs. Best-effort: a refresh failure should not fail the import.
+    try {
+      await client.indices.refresh({ index })
+    } catch {
+      /* ignore — the user can hit refresh manually */
+    }
+
     return {
       success: true,
       data: {
         connectionId,
         index,
-        format,
+        format: resolvedFormat,
         total,
         success,
         failed,

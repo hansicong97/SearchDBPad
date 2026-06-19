@@ -1,5 +1,5 @@
 /**
- * Index detail panel (phase 4 + 5 + 6 + 7 + 8 + 9).
+ * Index detail panel (phase 4 + 5 + 6 + 7 + 8 + 9 + layout fix in 13).
  *
  * Shown in the workspace when an index is selected. Seven tabs:
  *   - 文档      (phase 5) — paginated document table, default match_all
@@ -12,6 +12,11 @@
  *
  * Phase 7 (document CRUD) lives inside the 文档 tab as row actions and
  * the 编辑 modal — no separate tab.
+ *
+ * Phase 13 (layout fix): the card body is a flex column with the tabs
+ * header at fixed height and the active tab body owning its own scroll
+ * container, so the panel scrolls independently from the rest of the
+ * page.
  */
 
 import { useState } from 'react'
@@ -81,7 +86,14 @@ export default function IndexDetailPanel({
 
   return (
     <Card
-      style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden'
+      }}
       title={
         <Space>
           <Button
@@ -118,19 +130,27 @@ export default function IndexDetailPanel({
         </Button>
       }
       styles={{
-        body: { padding: 16, height: 'calc(100% - 56px)', overflow: 'hidden' }
+        body: {
+          padding: 16,
+          display: 'flex',
+          flexDirection: 'column',
+          flex: 1,
+          minHeight: 0,
+          overflow: 'hidden'
+        }
       }}
     >
       <Tabs
         activeKey={activeTab}
         onChange={(k) => setActiveTab(k as TabKey)}
-        style={{ height: '100%' }}
+        style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
+        tabBarStyle={{ flex: '0 0 auto', marginBottom: 12 }}
         items={[
           {
             key: 'documents',
             label: '文档',
             children: (
-              <div style={{ height: 'calc(100% - 40px)', overflow: 'auto' }}>
+              <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
                 <DocumentPanel />
               </div>
             )
@@ -139,7 +159,7 @@ export default function IndexDetailPanel({
             key: 'simple',
             label: '简单查询',
             children: (
-              <div style={{ height: 'calc(100% - 40px)', overflow: 'auto' }}>
+              <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
                 <SimpleQueryPanel />
               </div>
             )
@@ -148,7 +168,7 @@ export default function IndexDetailPanel({
             key: 'query',
             label: '查询',
             children: (
-              <div style={{ height: 'calc(100% - 40px)', overflow: 'auto' }}>
+              <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
                 <DslQueryPanel />
               </div>
             )
@@ -157,7 +177,7 @@ export default function IndexDetailPanel({
             key: 'mapping',
             label: 'Mapping',
             children: (
-              <div style={{ height: 'calc(100% - 40px)', overflow: 'auto' }}>
+              <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
                 <JsonView
                   data={mapping}
                   loading={mappingLoading}
@@ -171,7 +191,7 @@ export default function IndexDetailPanel({
             key: 'settings',
             label: 'Settings',
             children: (
-              <div style={{ height: 'calc(100% - 40px)', overflow: 'auto' }}>
+              <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
                 <JsonView
                   data={settings}
                   loading={settingsLoading}
@@ -185,7 +205,7 @@ export default function IndexDetailPanel({
             key: 'export',
             label: '导出',
             children: (
-              <div style={{ height: 'calc(100% - 40px)', overflow: 'auto' }}>
+              <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
                 <ExportPanel />
               </div>
             )
@@ -194,7 +214,7 @@ export default function IndexDetailPanel({
             key: 'import',
             label: '导入',
             children: (
-              <div style={{ height: 'calc(100% - 40px)', overflow: 'auto' }}>
+              <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
                 <ImportPanel />
               </div>
             )

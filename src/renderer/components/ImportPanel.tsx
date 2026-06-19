@@ -1,18 +1,19 @@
 /**
- * Import panel (phase 9).
+ * Import panel (phase 9 + 13).
  *
  * Tab content for the 导入 entry in `IndexDetailPanel`. Lets the user
  * pick a JSON / NDJSON / CSV file, preview the first 10 rows, and
  * bulk-insert them into the selected index via the OS + ES Bulk API.
  *
- * The MVP:
- *   - format is auto-detected from the file extension (JSON / NDJSON /
- *     CSV). No manual override.
- *   - target index defaults to the currently-selected index in the
- *     workspace store. The user can switch the index inline.
- *   - CSV cells are all coerced to strings (per the phase 9 spec).
- *   - bulk responses are aggregated; first 20 failures are surfaced
- *     in a collapsible detail list.
+ * Phase 13 (version update plan):
+ *   - The user can explicitly choose the source format (自动 / JSON /
+ *     NDJSON / CSV). `自动` infers from the file extension; the
+ *     explicit choice wins if set.
+ *   - The user can pick the import mode (追加 / 覆盖). 覆盖 wipes the
+ *     target index's docs first via `_delete_by_query` and requires
+ *     a second confirmation.
+ *   - On success the renderer's workspace store refreshes the current
+ *     document browse page when the target index matches.
  */
 
 import { useEffect, useMemo, useState } from 'react'
@@ -25,6 +26,8 @@ import {
   Collapse,
   Form,
   Input,
+  Radio,
+  Select,
   Space,
   Table,
   Tag,
@@ -33,6 +36,7 @@ import {
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
+  ExclamationCircleOutlined,
   FileTextOutlined,
   ImportOutlined
 } from '@ant-design/icons'
@@ -41,6 +45,7 @@ import type {
   ImportExecuteResult,
   ImportFailure,
   ImportFormat,
+  ImportMode,
   ImportPreviewResult,
   ImportPreviewRow
 } from '@shared/ipc'
@@ -80,18 +85,27 @@ function SourceCell({ value }: { value: Record<string, unknown> }): JSX.Element 
   )
 }
 
+function fileBaseName(p: string): string {
+  const norm = p.replace(/\\/g, '/')
+  return norm.split('/').pop() ?? p
+}
+
 export default function ImportPanel(): JSX.Element {
-  const { message } = AntdApp.useApp()
+  const { message, modal } = AntdApp.useApp()
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
   const selectedIndex = useWorkspaceStore((s) => s.selectedIndex)
   const indexList = useWorkspaceStore((s) => s.indices)
-  const refreshDocumentPage = useWorkspaceStore((s) => s.refreshDocumentPage)
+  const runImport = useWorkspaceStore((s) => s.runImport)
 
   const [targetIndex, setTargetIndex] = useState<string>(selectedIndex ?? '')
   const [pickedFile, setPickedFile] = useState<{
     filePath: string
-    format: ImportFormat
+    detectedFormat: ImportFormat
   } | null>(null)
+  /** The user-chosen (or "auto") format. `auto` means "infer from
+   *  extension on the main side". */
+  const [format, setFormat] = useState<ImportFormat>('auto')
+  const [mode, setMode] = useState<ImportMode>('append')
   const [preview, setPreview] = useState<ImportPreviewResult | null>(null)
   const [previewLoading, setPreviewLoading] = useState<boolean>(false)
   const [result, setResult] = useState<ImportExecuteResult | null>(null)
@@ -130,7 +144,15 @@ export default function ImportPanel(): JSX.Element {
       // User cancelled — silent no-op.
       return
     }
-    setPickedFile({ filePath: res.data.filePath, format: res.data.format })
+    setPickedFile({
+      filePath: res.data.filePath,
+      detectedFormat: res.data.format
+    })
+    // Reset the format to "auto" on a new file so the extension-inferred
+    // format from the picker is used by default.
+    setFormat('auto')
+    // Drop the previous preview — the new file may have a different shape.
+    setPreview(null)
   }
 
   const handlePreview = async (): Promise<void> => {
@@ -142,7 +164,7 @@ export default function ImportPanel(): JSX.Element {
     try {
       const res = await window.esApi.importDocs.preview({
         filePath: pickedFile.filePath,
-        format: pickedFile.format,
+        format,
         maxRows: PREVIEW_ROW_COUNT
       })
       if (!res.success || !res.data) {
@@ -155,20 +177,57 @@ export default function ImportPanel(): JSX.Element {
     }
   }
 
+  /** The format that the execute step will actually use. Useful so the
+   *  UI can show the resolved format to the user. */
+  const resolvedFormat: ImportFormat = useMemo(() => {
+    if (!pickedFile) return format
+    if (format !== 'auto') return format
+    return pickedFile.detectedFormat
+  }, [format, pickedFile])
+
   const handleExecute = async (): Promise<void> => {
     if (!ready || !pickedFile || !activeConnectionId) return
     setErrorMsg(null)
     setResult(null)
+    // Per plan §5.5.2, 覆盖 requires a second confirmation that
+    // explicitly names the target index and states that the existing
+    // documents will be deleted (not the index itself).
+    if (mode === 'replace') {
+      const ok = await new Promise<boolean>((resolve) => {
+        modal.confirm({
+          title: `覆盖导入到 "${targetIndex}" ？`,
+          icon: <ExclamationCircleOutlined style={{ color: '#faad14' }} />,
+          content: (
+            <Space direction="vertical" size={4}>
+              <Text>
+                该操作会先清空索引 <Text code>{targetIndex}</Text> 下的所有现有文档，
+                然后再写入文件内容。
+              </Text>
+              <Text type="danger">
+                现有文档将被永久删除，但索引本身、Mapping 和 Settings 保持不变。
+              </Text>
+            </Space>
+          ),
+          okText: `清空并导入到 "${targetIndex}"`,
+          okButtonProps: { danger: true },
+          cancelText: '取消',
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false)
+        })
+      })
+      if (!ok) return
+    }
     setImporting(true)
     try {
-      const res = await window.esApi.importDocs.execute({
+      const res = await runImport({
         connectionId: activeConnectionId,
         index: targetIndex,
         filePath: pickedFile.filePath,
-        format: pickedFile.format
+        format,
+        mode
       })
-      if (!res.success || !res.data) {
-        setErrorMsg(res.error?.message ?? '导入失败')
+      if (!res || !res.success || !res.data) {
+        setErrorMsg(res?.error?.message ?? '导入失败')
         return
       }
       setResult(res.data)
@@ -179,13 +238,6 @@ export default function ImportPanel(): JSX.Element {
         message.error(`导入失败：${r.failed} 条全部失败`)
       } else {
         message.warning(`部分导入：成功 ${r.success}，失败 ${r.failed}`)
-      }
-      // If the import landed in the index the user is currently
-      // browsing, refresh that page so they see the new docs without
-      // a manual reload. The store's race guard makes this safe even if
-      // the user switches index before the request returns.
-      if (activeConnectionId && r.index === selectedIndex) {
-        void refreshDocumentPage()
       }
     } finally {
       setImporting(false)
@@ -265,19 +317,64 @@ export default function ImportPanel(): JSX.Element {
           </Form.Item>
 
           <Form.Item label="文件" required>
-            <Space>
+            <Space wrap>
               <Button icon={<FileTextOutlined />} onClick={() => void handlePick()}>
                 选择文件
               </Button>
               {pickedFile ? (
-                <Space size={4}>
-                  <Text code>{pickedFile.filePath}</Text>
-                  <Tag color="blue">{pickedFile.format.toUpperCase()}</Tag>
+                <Space size={4} wrap>
+                  <Text code>{fileBaseName(pickedFile.filePath)}</Text>
+                  <Tag color="blue">{pickedFile.detectedFormat.toUpperCase()}</Tag>
                 </Space>
               ) : (
                 <Text type="secondary">未选择</Text>
               )}
             </Space>
+          </Form.Item>
+
+          <Form.Item label="导入格式" tooltip="自动识别按文件后缀 (.json / .ndjson / .csv) 推断；可手动切换。">
+            <Select
+              value={format}
+              onChange={(v) => setFormat(v as ImportFormat)}
+              style={{ width: 220 }}
+              options={[
+                { value: 'auto', label: '自动识别' },
+                { value: 'json', label: 'JSON' },
+                { value: 'ndjson', label: 'NDJSON' },
+                { value: 'csv', label: 'CSV' }
+              ]}
+            />
+            {pickedFile && format === 'auto' ? (
+              <Text type="secondary" style={{ fontSize: 12, marginTop: 4 }}>
+                将按文件后缀自动解析为 {pickedFile.detectedFormat.toUpperCase()}
+              </Text>
+            ) : null}
+          </Form.Item>
+
+          <Form.Item label="导入模式">
+            <Radio.Group
+              value={mode}
+              onChange={(e) => setMode(e.target.value as ImportMode)}
+            >
+              <Space direction="vertical" size={2}>
+                <Radio value="append">
+                  <Space size={4}>
+                    <Text>追加</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      (保留索引现有数据)
+                    </Text>
+                  </Space>
+                </Radio>
+                <Radio value="replace">
+                  <Space size={4}>
+                    <Text>覆盖</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      (先清空索引现有文档，再写入)
+                    </Text>
+                  </Space>
+                </Radio>
+              </Space>
+            </Radio.Group>
           </Form.Item>
 
           <Form.Item>
@@ -366,7 +463,7 @@ export default function ImportPanel(): JSX.Element {
           }
         >
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <Space size="large">
+            <Space size="large" wrap>
               <Text>
                 总计 <Text strong>{result.total.toLocaleString('en-US')}</Text> 条
               </Text>
@@ -378,6 +475,9 @@ export default function ImportPanel(): JSX.Element {
               </Text>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 索引：<Text code>{result.index}</Text>
+              </Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                模式：<Text code>{mode === 'replace' ? '覆盖' : '追加'}</Text>
               </Text>
             </Space>
             {result.failed > 0 ? (

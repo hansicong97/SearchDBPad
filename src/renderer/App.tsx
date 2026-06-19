@@ -196,7 +196,7 @@ function App(): JSX.Element {
         }}
       >
         <Space size="small">
-          <Text type="secondary">ES Desktop Client</Text>
+          <Text type="secondary">SearchDBPad</Text>
           <Tag color="blue">Phase 10 · Packaging</Tag>
           {lastTestResult && (
             <Text type="secondary" style={{ fontSize: 12 }}>

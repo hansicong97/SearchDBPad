@@ -1,5 +1,5 @@
 /**
- * Workspace page (phase 3 + 4 + 5).
+ * Workspace page (phase 3 + 4 + 5 + layout fix in 13).
  *
  * Shown in the main content area when a connection is active in the
  * sidebar. Displays:
@@ -8,7 +8,14 @@
  *  - either the index list (default) or the index detail panel
  *    (when an index row has been clicked)
  *
- * No document CRUD, import, or export — those land in later phases.
+ * Layout invariant (per the version 13 update plan):
+ *   - The root fills the height of its parent.
+ *   - The header row (title + refresh) is fixed at the top.
+ *   - Below the header, the right side becomes a flex column:
+ *       - ClusterInfoCard stays at its content height.
+ *       - The detail / index list fills the remaining height and
+ *         scrolls INDEPENDENTLY of the page (the page itself is
+ *         overflow:hidden so it never scrolls).
  */
 
 import { useCallback, useEffect } from 'react'
@@ -85,7 +92,7 @@ export default function WorkspacePage(): JSX.Element {
   if (!activeId || !activeConnection) {
     return (
       <Card
-        style={{ flex: 1, minWidth: 0 }}
+        style={{ flex: 1, minWidth: 0, minHeight: 0 }}
         title={
           <Title level={4} style={{ margin: 0 }}>
             工作台
@@ -110,7 +117,14 @@ export default function WorkspacePage(): JSX.Element {
 
   return (
     <Card
-      style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden'
+      }}
       title={
         <Space>
           <Title level={4} style={{ margin: 0 }}>
@@ -136,35 +150,31 @@ export default function WorkspacePage(): JSX.Element {
           flexDirection: 'column',
           gap: 16,
           overflow: 'hidden',
-          height: '100%'
+          flex: 1,
+          minHeight: 0,
+          padding: 16
         }
       }}
     >
-      <Card size="small" styles={{ body: { padding: 16 } }}>
-        <ClusterInfoCard />
-      </Card>
+      <div style={{ flex: '0 0 auto' }}>
+        <Card size="small" styles={{ body: { padding: 16 } }}>
+          <ClusterInfoCard />
+        </Card>
+      </div>
 
-      <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+      <div
+        style={{
+          flex: '1 1 auto',
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden'
+        }}
+      >
         {selectedIndex ? (
-          <IndexDetailPanel
-            indexName={selectedIndex}
-            onBack={handleBack}
-          />
+          <IndexDetailPanel indexName={selectedIndex} onBack={handleBack} />
         ) : (
-          <Card
-            size="small"
-            title="索引列表"
-            style={{ height: '100%' }}
-            styles={{
-              body: {
-                padding: 12,
-                height: 'calc(100% - 40px)',
-                overflow: 'auto'
-              }
-            }}
-          >
-            <IndexList onSelect={handleSelectIndex} />
-          </Card>
+          <IndexList onSelect={handleSelectIndex} />
         )}
       </div>
     </Card>

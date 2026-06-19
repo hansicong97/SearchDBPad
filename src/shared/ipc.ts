@@ -32,6 +32,10 @@ export const IpcChannels = {
   IndexMapping: 'index:mapping',
   IndexSettings: 'index:settings',
 
+  /* Index management (phase 13 version update) */
+  IndexCreate: 'index:create',
+  IndexDelete: 'index:delete',
+
   /* Document search (phase 5) */
   DocumentSearch: 'document:search',
 
@@ -174,6 +178,39 @@ export interface IndexSettingsResult {
   settings: Record<string, unknown>
 }
 
+/* ------------------- Index management types (phase 13) ------------------- */
+
+/** Payload for `index:create`. Settings and mappings are optional:
+ *  - both omitted → `PUT /{index}` creates an empty index with cluster
+ *    defaults
+ *  - settings only → body is `{ settings: {...} }`
+ *  - mappings only → body is `{ mappings: {...} }`
+ *  - both → body is `{ settings: {...}, mappings: {...} }` */
+export interface IndexCreateRequest {
+  connectionId: string
+  index: string
+  settings?: Record<string, unknown>
+  mappings?: Record<string, unknown>
+}
+
+export interface IndexCreateResult {
+  connectionId: string
+  index: string
+  acknowledged: boolean
+}
+
+/** Payload for `index:delete`. */
+export interface IndexDeleteRequest {
+  connectionId: string
+  index: string
+}
+
+export interface IndexDeleteResult {
+  connectionId: string
+  index: string
+  acknowledged: boolean
+}
+
 /* ------------------- Document search types (phase 5) ------------------- */
 
 /** Payload for `document:search`. The `query` body is forwarded verbatim
@@ -297,22 +334,35 @@ export interface ExportPickPathResult {
   outputPath: string | null
 }
 
-/* ------------------- Import types (phase 9) ------------------- */
+/* ------------------- Import types (phase 9 + 13) ------------------- */
 
-export type ImportFormat = 'json' | 'ndjson' | 'csv'
+/** Format of the source file. `auto` is only accepted by
+ *  `import:preview` / `import:execute`; `import:pickFile` returns the
+ *  inferred (non-`auto`) format. */
+export type ImportFormat = 'auto' | 'json' | 'ndjson' | 'csv'
+
+/** How to write the imported rows to the target index.
+ *  - `append`  → keep existing docs, write the new ones (may overwrite
+ *    same-_id docs).
+ *  - `replace` → first run `POST /{index}/_delete_by_query` to wipe
+ *    existing docs, then write the new ones. The mapping / settings
+ *    of the index are preserved. */
+export type ImportMode = 'append' | 'replace'
 
 /** Payload for `import:pickFile`. Opens the OS open dialog and returns
- *  the chosen file path plus the format inferred from the extension. */
+ *  the chosen file path plus the format inferred from the extension.
+ *  The hint is what the renderer expects (e.g. preferred filter);
+ *  the returned format is the resolved one and is never `'auto'`. */
 export interface ImportPickFileRequest {
   /** Pre-select filter — caller passes the format the user expects. */
-  format: ImportFormat
+  format: Exclude<ImportFormat, 'auto'>
 }
 
 export interface ImportPickFileResult {
   filePath: string | null
   /** Format inferred from the file extension. The renderer may override
-   *  this if the user picks a different format. */
-  format: ImportFormat | null
+   *  this if the user picks a different format. Never `'auto'`. */
+  format: Exclude<ImportFormat, 'auto'> | null
 }
 
 /** Payload for `import:preview`. Parses up to `maxRows` rows from the
@@ -348,12 +398,16 @@ export interface ImportPreviewResult {
 
 /** Payload for `import:execute`. The main process parses the file, sends
  *  `client.bulk` calls in batches of `BULK_BATCH_SIZE`, and returns the
- *  aggregated result. */
+ *  aggregated result. `mode=replace` triggers a
+ *  `POST /{index}/_delete_by_query` before the bulk; the index itself
+ *  is not dropped. `format='auto'` is resolved from the file extension
+ *  on the main side. */
 export interface ImportExecuteRequest {
   connectionId: string
   index: string
   filePath: string
   format: ImportFormat
+  mode: ImportMode
 }
 
 export interface ImportFailure {

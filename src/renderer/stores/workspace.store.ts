@@ -33,7 +33,13 @@ import type {
   DocumentSearchResult,
   DocumentWriteRequest,
   DocumentWriteResult,
-  EsIndexInfo
+  EsIndexInfo,
+  ImportExecuteRequest,
+  ImportExecuteResult,
+  IndexCreateRequest,
+  IndexCreateResult,
+  IndexDeleteRequest,
+  IndexDeleteResult
 } from '@shared/ipc'
 
 /** Default page size for the document browse tab. */
@@ -129,6 +135,25 @@ interface WorkspaceState {
   deleteDocument: (
     req: DocumentDeleteRequest
   ) => Promise<ApiResponse<DocumentDeleteResult> | null>
+
+  /* Phase 13 actions: index create / delete. On success the index
+   * list is re-fetched so the new / removed index shows up. The
+   * `onCreated` / `onDeleted` callbacks live in the call sites
+   * (IndexList / CreateIndexModal). */
+  createIndex: (
+    req: IndexCreateRequest
+  ) => Promise<ApiResponse<IndexCreateResult> | null>
+  deleteIndex: (
+    req: IndexDeleteRequest
+  ) => Promise<ApiResponse<IndexDeleteResult> | null>
+
+  /* Phase 13: import via IPC. Used by ImportPanel and by
+   * CreateIndexModal for the "create-and-import" flow. On success the
+   * current document browse page is refreshed if it is the same
+   * index, so the new docs show up without a manual reload. */
+  runImport: (
+    req: ImportExecuteRequest
+  ) => Promise<ApiResponse<ImportExecuteResult> | null>
 
   clear: () => void
 }
@@ -533,6 +558,57 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         req.index,
         get().documentPage,
         get().documentPageSize
+      )
+    }
+    return res
+  },
+
+  /* ------------------- Phase 13 actions: index CRUD ------------------- */
+
+  createIndex: async (req) => {
+    const res = await window.esApi.indices.create(req)
+    if (!res.success) return res
+    // Refresh the index list so the new index shows up. If the active
+    // connection changed mid-call, drop the result.
+    if (get().activeConnectionId !== req.connectionId) return res
+    await get().fetchIndices(req.connectionId)
+    return res
+  },
+
+  deleteIndex: async (req) => {
+    const res = await window.esApi.indices.delete(req)
+    if (!res.success) return res
+    // If the deleted index was the one we had selected, clear the
+    // detail state so the workspace falls back to the index list.
+    if (get().selectedIndex === req.index) {
+      set({ selectedIndex: null })
+    }
+    // Refresh the index list so the deletion is reflected.
+    if (get().activeConnectionId === req.connectionId) {
+      await get().fetchIndices(req.connectionId)
+    }
+    return res
+  },
+
+  /* ------------------- Phase 13: import action ------------------- */
+
+  runImport: async (req) => {
+    const res = await window.esApi.importDocs.execute(req)
+    if (!res.success) return res
+    // If the import landed in the index the user is currently
+    // browsing, refresh that page so they see the new docs without
+    // a manual reload. The store's race guard makes this safe even
+    // if the user switches index before the request returns.
+    const cur = get()
+    if (
+      cur.activeConnectionId === req.connectionId &&
+      cur.selectedIndex === req.index
+    ) {
+      await cur.fetchDocumentPage(
+        req.connectionId,
+        req.index,
+        cur.documentPage,
+        cur.documentPageSize
       )
     }
     return res

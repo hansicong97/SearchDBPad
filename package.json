@@ -1,9 +1,9 @@
 {
-  "name": "es-desktop-client",
+  "name": "searchdbpad",
   "version": "0.1.0",
-  "description": "Elasticsearch desktop management tool - Phase 10 packaging",
+  "description": "Desktop client for search engine data management",
   "main": "dist/main/index.js",
-  "author": "ES Desktop Client",
+  "author": "SearchDBPad",
   "license": "MIT",
   "scripts": {
     "dev": "concurrently -k -n VITE,ELECTRON -c blue,green \"npm:dev:renderer\" \"npm:dev:electron\"",
@@ -20,9 +20,9 @@
     "dist:portable": "npm run build && electron-builder --win portable"
   },
   "build": {
-    "appId": "com.esdesktop.client",
-    "productName": "ES Desktop Client",
-    "copyright": "Copyright © 2026 ES Desktop Client",
+    "appId": "com.searchdbpad.app",
+    "productName": "SearchDBPad",
+    "copyright": "Copyright © 2026 SearchDBPad",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -54,7 +54,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "ES Desktop Client",
+      "shortcutName": "SearchDBPad",
       "deleteAppDataOnUninstall": false
     },
     "portable": {

@@ -42,6 +42,10 @@ import {
   type ImportPickFileResult,
   type ImportPreviewRequest,
   type ImportPreviewResult,
+  type IndexCreateRequest,
+  type IndexCreateResult,
+  type IndexDeleteRequest,
+  type IndexDeleteResult,
   type IndexDetailRequest,
   type IndexListResult,
   type IndexMappingResult,
@@ -119,7 +123,21 @@ const api = {
       ipcRenderer.invoke(
         IpcChannels.IndexSettings,
         req
-      ) as Promise<ApiResponse<IndexSettingsResult>>
+      ) as Promise<ApiResponse<IndexSettingsResult>>,
+    create: (
+      req: IndexCreateRequest
+    ): Promise<ApiResponse<IndexCreateResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexCreate,
+        req
+      ) as Promise<ApiResponse<IndexCreateResult>>,
+    delete: (
+      req: IndexDeleteRequest
+    ): Promise<ApiResponse<IndexDeleteResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexDelete,
+        req
+      ) as Promise<ApiResponse<IndexDeleteResult>>
   },
 
   documents: {

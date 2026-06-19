@@ -17,9 +17,9 @@ function AppHeader(): JSX.Element {
     >
       <Space align="center" size="middle">
         <Title level={4} style={{ margin: 0 }}>
-          ES Desktop Client
+          SearchDBPad
         </Title>
-        <Text type="secondary">Elasticsearch 桌面管理工具</Text>
+        <Text type="secondary">搜索引擎数据管理桌面客户端</Text>
       </Space>
     </Header>
   )

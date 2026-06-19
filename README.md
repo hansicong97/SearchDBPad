@@ -1,8 +1,8 @@
-# ES Desktop Client
+# SearchDBPad
 
 > Languages: **English** | [简体中文](README.zh-CN.md)
 
-A Windows desktop client for Elasticsearch, structured like Navicat-for-MySQL — saved connections, cluster + index browsing, document CRUD, simple queries, and bulk import / export.
+SearchDBPad is a desktop client for search engine data management. The current version focuses on Elasticsearch, providing saved connections, cluster and index browsing, document CRUD, simple queries, and bulk import / export.
 
 Built on Electron + React + TypeScript with a three-process architecture (main / preload / renderer) and `contextIsolation: true`, `nodeIntegration: false` as the security baseline.
 
@@ -10,7 +10,7 @@ macOS support is on the roadmap but not yet wired up. See [Roadmap](#roadmap).
 
 ## Features
 
-- **Connection management** — save / edit / delete / test ES connections, with basic / API-key auth
+- **Connection management** — save / edit / delete / test Elasticsearch connections, with basic / API-key auth
 - **Cluster + index browser** — health, version, node list, index stats, mapping
 - **Document browser** — paginated list, sort, filter
 - **Query** — JSON query body editor (Monaco), single-doc get by `_id`
@@ -25,7 +25,7 @@ macOS support is on the roadmap but not yet wired up. See [Roadmap](#roadmap).
 - **React 18 + TypeScript 5 + Vite 5**
 - **Ant Design 5** UI kit
 - **Monaco Editor** for JSON query body
-- **@elastic/elasticsearch 8.15** client (the only place that talks to ES)
+- **@elastic/elasticsearch 8.15** client for the current Elasticsearch implementation
 - **electron-store 8** for persisting connection configs
 - **Zustand** for renderer state
 - **electron-builder 25** for packaging
@@ -34,7 +34,7 @@ macOS support is on the roadmap but not yet wired up. See [Roadmap](#roadmap).
 
 ```
 src/
-  main/         Electron main process — owns the BrowserWindow, registers IPC handlers, talks to ES
+  main/         Electron main process — owns the BrowserWindow, registers IPC handlers, talks to Elasticsearch in the current implementation
   preload/      contextBridge surface exposed to the renderer as window.esApi
   renderer/     React app (Vite root)
   shared/       ipc.ts — channel constants + payload/result types shared by all three layers
@@ -82,8 +82,8 @@ npm start             # run Electron against the built output
 | `npm run dist:win` | Same as `dist`, explicit Windows target |
 | `npm run dist:portable` | Single-file 绿色版 (self-extracting `.exe`, no installation) |
 
-- NSIS: `release/ES Desktop Client-<version>-x64.exe` — full installer with desktop / start-menu shortcuts, allows choosing install directory. Uninstaller prompts before deleting `electron-store` data (see `build/installer.nsh`).
-- Portable: `release/ES Desktop Client-<version>-portable.exe` — double-click to run, no registry / start-menu writes. Good for "drop on a USB stick" use.
+- NSIS: `release/SearchDBPad-<version>-x64.exe` — full installer with desktop / start-menu shortcuts, allows choosing install directory. Uninstaller prompts before deleting `electron-store` data (see `build/installer.nsh`).
+- Portable: `release/SearchDBPad-<version>-portable.exe` — double-click to run, no registry / start-menu writes. Good for "drop on a USB stick" use.
 
 ### Quick packaging reference
 
@@ -124,6 +124,7 @@ Full product spec and phased roadmap live in `ES_DESKTOP_CLIENT_PLAN.md`. Per-ph
 ### Future plans
 
 - **macOS support** — wiring up `dist:mac` (DMG + ZIP, Intel + Apple Silicon) is deferred. electron-builder only supports `--mac` on macOS itself, so this will land alongside a `macos-latest` GitHub Actions runner rather than as a local Windows run.
+- **Multi-engine support** — the current implementation focuses on Elasticsearch. Future versions should add support for mainstream search engines such as Solr through an adapter/provider layer.
 
 ## License
 

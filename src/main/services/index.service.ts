@@ -17,6 +17,10 @@ import { buildEsClient, resolveConnection } from './esClient'
 import type {
   ApiResponse,
   EsIndexInfo,
+  IndexCreateRequest,
+  IndexCreateResult,
+  IndexDeleteRequest,
+  IndexDeleteResult,
   IndexListResult,
   IndexMappingResult,
   IndexSettingsResult
@@ -149,6 +153,75 @@ export async function getIndexSettings(
     return {
       success: false,
       error: { message: describeIndexError(err, index) }
+    }
+  }
+}
+
+/* ------------------- Phase 13: index create / delete ------------------- */
+
+/** Create an index. Pass only `index` to create an empty index with
+ *  cluster defaults; pass `settings` / `mappings` to configure the new
+ *  index. The body is `{ settings?, mappings? }` — `mappings` (plural) is
+ *  what `PUT /{index}` expects, NOT `mapping`. */
+export async function createIndex(
+  req: IndexCreateRequest
+): Promise<ApiResponse<IndexCreateResult>> {
+  try {
+    const conn = resolveConnection(req.connectionId)
+    const client = buildEsClient(conn)
+    const body: Record<string, unknown> = {}
+    if (req.settings && Object.keys(req.settings).length > 0) {
+      body.settings = req.settings
+    }
+    if (req.mappings && Object.keys(req.mappings).length > 0) {
+      body.mappings = req.mappings
+    }
+    const acknowledged = await client.indices.create({
+      index: req.index,
+      body
+    })
+    return {
+      success: true,
+      data: {
+        connectionId: req.connectionId,
+        index: req.index,
+        acknowledged: Boolean(acknowledged)
+      }
+    }
+  } catch (err) {
+    return {
+      success: false,
+      error: { message: describeIndexError(err, req.index) }
+    }
+  }
+}
+
+/** Delete an index. ES returns `{ acknowledged: true }` on success, but
+ *  also returns 200 for "index not found" with `acknowledged: true` in
+ *  some versions — we surface the raw client response, not a fabricated
+ *  success. The renderer's delete UI pops a confirm dialog before this
+ *  is called. */
+export async function deleteIndex(
+  req: IndexDeleteRequest
+): Promise<ApiResponse<IndexDeleteResult>> {
+  try {
+    const conn = resolveConnection(req.connectionId)
+    const client = buildEsClient(conn)
+    const acknowledged = await client.indices.delete({
+      index: req.index
+    })
+    return {
+      success: true,
+      data: {
+        connectionId: req.connectionId,
+        index: req.index,
+        acknowledged: Boolean(acknowledged)
+      }
+    }
+  } catch (err) {
+    return {
+      success: false,
+      error: { message: describeIndexError(err, req.index) }
     }
   }
 }
