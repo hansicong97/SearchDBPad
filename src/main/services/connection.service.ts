@@ -20,6 +20,7 @@ import {
   saveConnectionFolders,
   saveConnections
 } from '../store/connectionStore'
+import { invalidateServerInfoCache } from '../search/serverVersionCache'
 import type {
   ApiResponse,
   ConnectionFolder,
@@ -102,6 +103,10 @@ function normalizeConnection(input: EsConnectionInput): EsConnection {
   return {
     id: input.id ?? randomUUID(),
     name: input.name.trim(),
+    // V0.3.0: only Elasticsearch is supported today. The field is set
+    // here so persisted entries always carry `engineType`, making the
+    // legacy-read backfill in connectionStore a no-op for new data.
+    engineType: 'elasticsearch',
     url: input.url.trim().replace(/\/+$/, ''),
     authType,
     username: authType === 'basic' ? input.username?.trim() : undefined,
@@ -141,6 +146,10 @@ export function createConnection(
     const list = loadConnections()
     list.push(conn)
     saveConnections(list)
+    // New connection — any cached server info for it (shouldn't exist
+    // yet, but defend against partial writes from earlier sessions)
+    // is now meaningless.
+    invalidateServerInfoCache(conn.id)
     return { success: true, data: conn }
   } catch (err) {
     return { success: false, error: { message: (err as Error).message } }
@@ -169,10 +178,18 @@ export function updateConnection(
       password:
         input.authType === 'basic' ? input.password : undefined,
       folderId: input.folderId ?? existing.folderId ?? null,
+      // V0.3.0: preserve the persisted engine type. `existing` comes
+      // from loadConnections() so it is already backfilled, but the
+      // fallback guards against any future caller that hands us a raw
+      // record. The trailing position wins over `...existing`.
+      engineType: existing.engineType ?? 'elasticsearch',
       updatedAt: nowIso()
     }
     list[idx] = merged
     saveConnections(list)
+    // URL / auth may have changed; drop the cached server info so the
+    // adapter re-detects on next use.
+    invalidateServerInfoCache(merged.id)
     return { success: true, data: merged }
   } catch (err) {
     return { success: false, error: { message: (err as Error).message } }
@@ -187,6 +204,7 @@ export function deleteConnection(id: string): ApiResponse<{ id: string }> {
       return { success: false, error: { message: '未找到对应连接' } }
     }
     saveConnections(next)
+    invalidateServerInfoCache(id)
     return { success: true, data: { id } }
   } catch (err) {
     return { success: false, error: { message: (err as Error).message } }

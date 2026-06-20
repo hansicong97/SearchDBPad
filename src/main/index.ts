@@ -38,6 +38,7 @@ import {
   updateConnectionFolder
 } from './services/connection.service'
 import { getClusterHealth, getClusterInfo } from './services/cluster.service'
+import { searchEngineDetect } from './services/searchEngine.service'
 import {
   createIndex,
   deleteIndex,
@@ -194,6 +195,11 @@ function registerIpcHandlers(): void {
   )
   ipcMain.handle(IpcChannels.ImportPreview, (_evt, req) => importPreview(req))
   ipcMain.handle(IpcChannels.ImportExecute, (_evt, req) => runImport(req))
+
+  /* Search engine metadata (V0.3.0 §10.2) */
+  ipcMain.handle(IpcChannels.SearchEngineDetect, (_evt, connectionId: string) =>
+    searchEngineDetect(connectionId)
+  )
 }
 
 /** Open the OS save dialog and return the chosen file path. Returns

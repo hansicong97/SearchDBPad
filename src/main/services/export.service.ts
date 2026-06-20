@@ -1,23 +1,15 @@
 /**
- * Export service (phase 8).
+ * Export service.
  *
- * Runs in the Electron main process — the only place allowed to talk to
- * Elasticsearch and to write files. Phase 8 scope:
- *
- *   - One-shot `POST /{index}/_search` capped at `MAX_EXPORT_ROWS` rows.
- *     Scroll / search_after based bulk export is intentionally NOT here
- *     (see ai-dev-steps/08_EXPORT.md MVP limits).
- *   - Three formats: JSON, NDJSON (Bulk-API-compatible), CSV.
- *   - UTF-8 BOM prefix on CSV so Excel on Windows renders Chinese
- *     correctly (otherwise it interprets the file as system codepage).
- *
- * The renderer never sees the filesystem; `outputPath` is chosen via
- * `dialog.showSaveDialog` from the main process.
+ * V0.3.0: the adapter handles `POST /_search` and returns engine-native
+ *  hits. Format serialization (JSON / NDJSON / CSV) and file write
+ *  stay here — per spec §9.5, different engines can share file IO
+ *  but writing semantics differ.
  */
 
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { buildEsClient, resolveConnection } from './esClient'
+import { resolveAdapterByConnectionId } from './searchEngine.service'
 import type {
   ApiResponse,
   DocumentHit,
@@ -26,29 +18,19 @@ import type {
   ExportResult
 } from '../../shared/ipc'
 import { MAX_EXPORT_ROWS } from '../../shared/ipc'
+import type { ExportInput } from '../search/adapter.types'
 
-interface EsSearchResponseShape {
-  hits?: {
-    hits?: Array<{
-      _index?: string
-      _id?: string
-      _score?: number | null
-      _source?: Record<string, unknown> | null
-    }>
-  }
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 function describeExportError(err: unknown, index: string): string {
-  if (err && typeof err === 'object' && 'meta' in err) {
-    const meta = (err as { meta?: { statusCode?: number } }).meta
-    if (meta?.statusCode === 404) {
-      return `索引 "${index}" 不存在`
-    }
-    if (meta?.statusCode === 400) {
-      return `DSL 无效或索引名非法: ${index}`
-    }
+  if (err && typeof err === 'object' && 'status' in err) {
+    const status = (err as { status?: number }).status
+    if (status === 404) return `索引 "${index}" 不存在`
+    if (status === 400) return `DSL 无效或索引名非法: ${index}`
   }
-  return err instanceof Error ? err.message : String(err)
+  return errMsg(err)
 }
 
 /** Build a JSON-safe value for CSV cells. Objects/arrays become their
@@ -86,16 +68,18 @@ function formatHits(
     // Per spec: array of `{ _id, _source }`. Pretty-printed for
     // human-readable output; the file is meant for round-tripping
     // through phase 9's JSON import path.
-    return JSON.stringify(
-      hits.map((h) => ({ _id: h._id, _source: h._source })),
-      null,
-      2
-    ) + '\n'
+    return (
+      JSON.stringify(
+        hits.map((h) => ({ _id: h._id, _source: h._source })),
+        null,
+        2
+      ) + '\n'
+    )
   }
   if (format === 'ndjson') {
     // Bulk-API-compatible: alternating action line + source line, no
-    // surrounding array, no commas, no trailing newline at EOF (the last
-    // newline is fine — Bulk readers tolerate it).
+    // surrounding array, no commas, no trailing newline at EOF (the
+    // last newline is fine — Bulk readers tolerate it).
     const lines: string[] = []
     for (const h of hits) {
       lines.push(JSON.stringify({ index: { _index: index, _id: h._id } }))
@@ -125,7 +109,8 @@ function formatCsv(hits: DocumentHit[]): string {
   for (const h of hits) {
     const row: string[] = [csvEscape(h._id)]
     for (const k of keys) {
-      const v = h._source && typeof h._source === 'object' ? h._source[k] : undefined
+      const v =
+        h._source && typeof h._source === 'object' ? h._source[k] : undefined
       row.push(csvEscape(csvCell(v)))
     }
     lines.push(row.join(','))
@@ -147,32 +132,14 @@ export async function runExport(
   const maxRows = Math.min(Math.floor(requested), MAX_EXPORT_ROWS)
 
   try {
-    const conn = resolveConnection(connectionId)
-    const client = buildEsClient(conn)
-    const body: Record<string, unknown> = {
-      // `track_total_hits: true` so the caller can show "exported N of M"
-      // in a follow-up (currently we just report `rows`).
-      track_total_hits: true,
-      size: maxRows,
-      // `match_all` if no DSL body was supplied.
-      query: query ?? { match_all: {} }
-    }
-    const response = (await client.search({
-      index,
-      ...body
-    } as Parameters<typeof client.search>[0])) as unknown as EsSearchResponseShape
+    const { connection, adapter } = await resolveAdapterByConnectionId(
+      connectionId
+    )
 
-    const rawHits = Array.isArray(response.hits?.hits)
-      ? response.hits!.hits!
-      : []
-    const hits: DocumentHit[] = rawHits.map((h) => ({
-      _id: h._id ?? '',
-      _index: h._index ?? index,
-      _score: typeof h._score === 'number' ? h._score : null,
-      _source: (h._source ?? null) as Record<string, unknown> | null
-    }))
+    const adapterInput: ExportInput = { index, maxRows, query }
+    const result = await adapter.exportDocuments(connection, adapterInput)
 
-    let payload = formatHits(hits, format, index)
+    let payload = formatHits(result.hits, format, index)
     // CSV only: prepend UTF-8 BOM so Excel auto-detects encoding and
     // does not garble Chinese (and other non-ASCII) text.
     if (format === 'csv' && payload.length > 0) {
@@ -192,7 +159,7 @@ export async function runExport(
         index,
         format,
         outputPath,
-        rows: hits.length,
+        rows: result.hits.length,
         bytes: stat.size
       }
     }

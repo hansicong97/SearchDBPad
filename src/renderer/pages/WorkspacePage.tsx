@@ -19,7 +19,7 @@
  */
 
 import { useCallback, useEffect } from 'react'
-import { App as AntdApp, Button, Card, Empty, Space, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Empty, Space, Tag, Typography } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import ClusterInfoCard from '../components/ClusterInfoCard'
 import IndexDetailPanel from '../components/IndexDetailPanel'
@@ -51,6 +51,11 @@ export default function WorkspacePage(): JSX.Element {
   const simpleError = useWorkspaceStore((s) => s.simpleError)
   const simpleLoading = useWorkspaceStore((s) => s.simpleLoading)
 
+  // V0.3.0 §10.2: server engine info shown in the workspace header.
+  const serverInfo = useWorkspaceStore((s) => s.serverInfo)
+  const serverInfoError = useWorkspaceStore((s) => s.serverInfoError)
+  const serverInfoLoading = useWorkspaceStore((s) => s.serverInfoLoading)
+
   const connections = useConnectionStore((s) => s.connections)
   const activeConnection = connections.find((c) => c.id === activeId) ?? null
 
@@ -77,6 +82,9 @@ export default function WorkspacePage(): JSX.Element {
   useEffect(() => {
     if (simpleError && !simpleLoading) message.error(simpleError)
   }, [simpleError, simpleLoading, message])
+  useEffect(() => {
+    if (serverInfoError && !serverInfoLoading) message.error(serverInfoError)
+  }, [serverInfoError, serverInfoLoading, message])
 
   const handleSelectIndex = useCallback(
     (name: string) => {
@@ -153,6 +161,15 @@ export default function WorkspacePage(): JSX.Element {
           <Text type="secondary" style={{ fontSize: 12 }}>
             {activeConnection.url}
           </Text>
+          {serverInfo && (
+            <Tag
+              color="blue"
+              style={{ marginLeft: 4 }}
+              title={`${serverInfo.engineName} ${serverInfo.version} · major=${serverInfo.major} minor=${serverInfo.minor} patch=${serverInfo.patch}`}
+            >
+              {serverInfo.engineName} {serverInfo.version}
+            </Tag>
+          )}
         </Space>
       }
       extra={

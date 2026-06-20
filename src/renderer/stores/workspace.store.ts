@@ -41,6 +41,7 @@ import type {
   IndexDeleteRequest,
   IndexDeleteResult
 } from '@shared/ipc'
+import type { SearchEngineServerInfo } from '@shared/searchEngine'
 
 /** Default page size for the document browse tab. */
 const DEFAULT_PAGE_SIZE = 20
@@ -87,10 +88,18 @@ interface WorkspaceState {
   simpleLoading: boolean
   simpleError: string | null
 
+  /* V0.3.0 §10.2: search engine version probe. Cached per-connection
+   * in the main process; the renderer only holds the latest result
+   * for the active connection so the workspace header can show it. */
+  serverInfo: SearchEngineServerInfo | null
+  serverInfoLoading: boolean
+  serverInfoError: string | null
+
   setActiveConnection: (id: string | null) => void
 
   fetchCluster: (connectionId: string) => Promise<void>
   fetchIndices: (connectionId: string) => Promise<void>
+  fetchServerInfo: (connectionId: string) => Promise<void>
   refreshAll: () => Promise<void>
 
   selectIndex: (name: string | null) => void
@@ -212,6 +221,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   simpleLoading: false,
   simpleError: null,
 
+  serverInfo: null,
+  serverInfoLoading: false,
+  serverInfoError: null,
+
   setActiveConnection: (id) => {
     if (id === get().activeConnectionId) return
     set({
@@ -247,11 +260,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       // Phase 6: also clear the simple-query state.
       simpleResults: null,
       simpleLoading: false,
-      simpleError: null
+      simpleError: null,
+      // V0.3.0 §10.2: clear the engine probe result so the header
+      // badge doesn't briefly show the previous connection's version.
+      serverInfo: null,
+      serverInfoLoading: false,
+      serverInfoError: null
     })
     if (id) {
       void get().fetchCluster(id)
       void get().fetchIndices(id)
+      void get().fetchServerInfo(id)
     }
   },
 
@@ -298,7 +317,30 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   refreshAll: async () => {
     const id = get().activeConnectionId
     if (!id) return
-    await Promise.all([get().fetchCluster(id), get().fetchIndices(id)])
+    await Promise.all([
+      get().fetchCluster(id),
+      get().fetchIndices(id),
+      get().fetchServerInfo(id)
+    ])
+  },
+
+  fetchServerInfo: async (connectionId) => {
+    set({ serverInfoLoading: true, serverInfoError: null })
+    const res = await window.esApi.searchEngine.detect(connectionId)
+    // Race guard: drop if the active connection changed mid-call.
+    if (get().activeConnectionId !== connectionId) return
+    if (res.success && res.data) {
+      set({
+        serverInfoLoading: false,
+        serverInfo: res.data,
+        serverInfoError: null
+      })
+    } else {
+      set({
+        serverInfoLoading: false,
+        serverInfoError: res.error?.message ?? '探测搜索引擎版本失败'
+      })
+    }
   },
 
   selectIndex: (name) => {
@@ -643,7 +685,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       dslError: null,
       simpleResults: null,
       simpleLoading: false,
-      simpleError: null
+      simpleError: null,
+      serverInfo: null,
+      serverInfoLoading: false,
+      serverInfoError: null
     })
   }
 }))

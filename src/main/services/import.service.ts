@@ -1,40 +1,31 @@
 /**
- * Import service (phase 9).
+ * Import service.
  *
- * Runs in the Electron main process — the only place allowed to talk to
- * Elasticsearch and to read arbitrary user files. Phase 9 scope:
+ * V0.3.0: file IO + format parsing stay here (JSON / NDJSON / CSV).
+ *  The adapter handles the actual `POST /_bulk` write — see
+ *  `src/main/adapters/elasticsearch/importApi.ts`. This split keeps
+ *  file IO concerns out of the engine layer (per spec §9.5).
  *
- *   - Parse JSON array / NDJSON (Bulk + plain) / CSV files.
- *   - Preview the first N rows without doing the full Bulk request.
- *   - Execute via `POST /_bulk` in batches of `BULK_BATCH_SIZE`.
- *   - Aggregate success / failure counts and the first N failures.
- *
- * The renderer never sees the filesystem. All file IO happens here.
+ *  Trade-off: in `replace` mode, the adapter does the wipe
+ *  (`_delete_by_query`) before the bulk call. We can't distinguish
+ *  wipe-failure from bulk-failure from the service side, so any
+ *  adapter throw in `replace` mode is surfaced as the
+ *  "清空索引失败" message the old SDK path produced. Other modes
+ *  get a generic error.
  */
 
 import { promises as fs } from 'node:fs'
-import { buildEsClient, resolveConnection } from './esClient'
+import { resolveAdapterByConnectionId } from './searchEngine.service'
 import type {
   ApiResponse,
   ImportExecuteRequest,
   ImportExecuteResult,
-  ImportFailure,
   ImportFormat,
   ImportPreviewRequest,
   ImportPreviewResult,
   ImportPreviewRow
 } from '../../shared/ipc'
-
-/** Bulk batch size. ES tolerates much larger (5-15 MB worth), but small
- *  batches keep partial-failure surfaces small and timeouts predictable. */
-const BULK_BATCH_SIZE = 1000
-
-/** Cap on the per-row raw text we echo back in `ImportFailure.raw`. */
-const RAW_FAILURE_PREVIEW = 500
-
-/** Cap on the failures array we return to the renderer — the user only
- *  needs enough context to debug, not every error from a 50k row file. */
-const FAILURES_LIMIT = 20
+import type { ImportInput } from '../search/adapter.types'
 
 /* ------------------- File format helpers ------------------- */
 
@@ -45,9 +36,6 @@ interface ParsedRow {
 }
 
 interface ParsedFile {
-  /** All rows, fully materialized (Bulk requires we send them in order
-   *  so we cannot stream through them). For a 10000-row file this is
-   *  fine; if the file is huge we can revisit with streaming Bulk. */
   rows: ParsedRow[]
   warnings: string[]
 }
@@ -75,11 +63,10 @@ function splitLines(text: string): string[] {
 }
 
 /** True when the line is a Bulk action metadata line. NDJSON Bulk files
- *  alternate such lines with source lines. Note: while the parser accepts
- *  `index` / `create` / `update` / `delete` here, `runImport` currently
- *  re-emits every row as an `index` action — `create` / `update` /
- *  `delete` semantics are NOT preserved on the way out. `delete` lines
- *  (which carry no source body) will fail to parse at all. */
+ *  alternate such lines with source lines. The parser accepts
+ *  `index` / `create` / `update` / `delete` here, but
+ *  `runImport` re-emits every row as an `index` action — `create` /
+ *  `update` / `delete` semantics are NOT preserved on the way out. */
 function isBulkActionLine(obj: unknown): obj is Record<string, unknown> {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false
   const keys = Object.keys(obj)
@@ -299,11 +286,6 @@ async function readAndParse(
     return { rows, warnings: warning ? [warning] : [] }
   }
   if (format === 'json') {
-    // `JSON.parse` fails fast on a single line of NDJSON content, so we
-    // can safely assume `parseJsonArray` will catch a NDJSON-misnamed
-    // file. If the file content looks like NDJSON (first non-whitespace
-    // is `{` and there are multiple JSON objects per line), surface a
-    // warning so the user knows they probably want `ndjson` instead.
     const warnings: string[] = []
     if (text.trimStart().startsWith('{') && /\r?\n\s*\{/.test(text)) {
       warnings.push(
@@ -316,22 +298,21 @@ async function readAndParse(
   return parseNdjson(text)
 }
 
-/* ------------------- Preview + execute ------------------- */
+/* ------------------- Preview (no adapter) ------------------- */
 
 export async function importPreview(
   req: ImportPreviewRequest
 ): Promise<ApiResponse<ImportPreviewResult>> {
   try {
-    // Resolve `auto` to the extension-derived format before parsing.
     const format = resolveFormat(req.filePath, req.format)
     const parsed = await readAndParse(req.filePath, format)
-    const preview: ImportPreviewRow[] = parsed.rows.slice(0, req.maxRows).map(
-      (r): ImportPreviewRow => ({
+    const preview: ImportPreviewRow[] = parsed.rows
+      .slice(0, req.maxRows)
+      .map((r): ImportPreviewRow => ({
         id: r.id,
         source: r.source,
         raw: r.raw
-      })
-    )
+      }))
     return {
       success: true,
       data: {
@@ -351,29 +332,8 @@ export async function importPreview(
   }
 }
 
-interface BulkItemResponse {
-  index?: {
-    _id?: string
-    status?: number
-    error?: { type?: string; reason?: string }
-  }
-}
+/* ------------------- Execute (adapter) ------------------- */
 
-interface BulkResponseShape {
-  errors?: boolean
-  items?: BulkItemResponse[]
-}
-
-function truncate(s: string | undefined, n: number): string | undefined {
-  if (s === undefined) return undefined
-  return s.length <= n ? s : s.slice(0, n) + '…'
-}
-
-/** Resolve `format='auto'` to the format inferred from the file's
- *  extension. Falls back to `json` when the extension is unknown — this
- *  is the historical behavior of the picker, but on the import path
- *  we want a deterministic answer, so the renderer should normally
- *  pick something other than `auto` for the execute step. */
 function resolveFormat(
   filePath: string,
   format: ImportFormat
@@ -383,19 +343,8 @@ function resolveFormat(
   return detected ?? 'json'
 }
 
-/** In `replace` mode, wipe the index's existing docs first via
- *  `_delete_by_query`. Failures here MUST short-circuit the import —
- *  the plan calls this out explicitly to avoid partial success. */
-async function clearIndexForReplace(
-  client: ReturnType<typeof buildEsClient>,
-  index: string
-): Promise<void> {
-  await client.deleteByQuery({
-    index,
-    body: { query: { match_all: {} } },
-    refresh: true,
-    conflicts: 'proceed'
-  })
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 export async function runImport(
@@ -405,101 +354,34 @@ export async function runImport(
   try {
     const resolvedFormat = resolveFormat(filePath, format)
     const parsed = await readAndParse(filePath, resolvedFormat)
-    const total = parsed.rows.length
 
-    const conn = resolveConnection(connectionId)
-    const client = buildEsClient(conn)
+    const { connection, adapter } = await resolveAdapterByConnectionId(
+      connectionId
+    )
 
-    // `replace` → clear existing docs first. A failure here must NOT
-    // proceed to bulk; surface the error to the caller.
-    if (mode === 'replace' && total > 0) {
-      try {
-        await clearIndexForReplace(client, index)
-      } catch (err) {
+    const adapterInput: ImportInput = {
+      index,
+      rows: parsed.rows.map((r) => ({ id: r.id, source: r.source })),
+      mode
+    }
+
+    let result
+    try {
+      result = await adapter.importDocuments(connection, adapterInput)
+    } catch (err) {
+      // In `replace` mode the adapter does the wipe before the bulk
+      // call; we can't tell which step failed from the service side,
+      // but the legacy SDK surfaced the same wording for the wipe
+      // case, so we preserve that.
+      if (mode === 'replace') {
         return {
           success: false,
           error: {
-            message: `清空索引 "${index}" 失败：${
-              err instanceof Error ? err.message : String(err)
-            }`
+            message: `清空索引 "${index}" 失败：${errMsg(err)}`
           }
         }
       }
-    }
-
-    if (total === 0) {
-      // Still refresh in replace mode so an empty import shows up
-      // immediately. Best-effort: ignore refresh errors.
-      if (mode === 'replace') {
-        try {
-          await client.indices.refresh({ index })
-        } catch {
-          /* ignore */
-        }
-      }
-      return {
-        success: true,
-        data: {
-          connectionId,
-          index,
-          format: resolvedFormat,
-          total: 0,
-          success: 0,
-          failed: 0,
-          failures: []
-        }
-      }
-    }
-
-    let success = 0
-    let failed = 0
-    const failures: ImportFailure[] = []
-
-    for (let start = 0; start < total; start += BULK_BATCH_SIZE) {
-      const batch = parsed.rows.slice(start, start + BULK_BATCH_SIZE)
-      const operations: Record<string, unknown>[] = []
-      for (const row of batch) {
-        const action: Record<string, unknown> = { _index: index }
-        if (row.id !== undefined) action._id = row.id
-        operations.push({ index: action })
-        operations.push(row.source)
-      }
-      const response = (await client.bulk({
-        refresh: false,
-        operations: operations as unknown as Parameters<typeof client.bulk>[0] extends infer R
-          ? R extends { operations?: infer O }
-            ? O
-            : never
-          : never
-      })) as unknown as BulkResponseShape
-
-      const items = Array.isArray(response.items) ? response.items : []
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i]
-        const op = item.index
-        if (op && op.error) {
-          failed++
-          if (failures.length < FAILURES_LIMIT) {
-            failures.push({
-              line: start + i,
-              id: typeof op._id === 'string' ? op._id : undefined,
-              error:
-                op.error.reason ?? op.error.type ?? 'Bulk 项失败（未知原因）',
-              raw: truncate(batch[i].raw, RAW_FAILURE_PREVIEW)
-            })
-          }
-        } else {
-          success++
-        }
-      }
-    }
-
-    // Refresh the target index so the next UI _search sees the new
-    // docs. Best-effort: a refresh failure should not fail the import.
-    try {
-      await client.indices.refresh({ index })
-    } catch {
-      /* ignore — the user can hit refresh manually */
+      throw err
     }
 
     return {
@@ -508,18 +390,16 @@ export async function runImport(
         connectionId,
         index,
         format: resolvedFormat,
-        total,
-        success,
-        failed,
-        failures
+        total: result.total,
+        success: result.success,
+        failed: result.failed,
+        failures: result.failures
       }
     }
   } catch (err) {
     return {
       success: false,
-      error: {
-        message: err instanceof Error ? err.message : String(err)
-      }
+      error: { message: errMsg(err) }
     }
   }
 }

@@ -1,19 +1,16 @@
 /**
- * Index list business logic.
+ * Index list / mapping / settings / create / delete.
  *
- * Runs in the Electron main process. Uses the @elastic/elasticsearch
- * official client and the `_cat/indices` endpoint.
- *
- * Phase 3 scope: list all indices visible to the connection, normalized
- * to a stable shape with numeric fields (the cat API returns everything
- * as strings when format=json).
- *
- * Phase 4 scope: per-index `_mapping` and `_settings` lookups. The raw
- * JSON payload from Elasticsearch is returned unchanged — the renderer is
- * responsible for formatting and display.
+ * V0.3.0: routed through the adapter. The service still returns the
+ *  legacy `EsIndexInfo` shape so the renderer (which sorts on
+ *  `docsDeleted` and `storeSize`) keeps working unchanged. The
+ *  adapter's engine-agnostic `SearchIndexInfo` does NOT carry
+ *  `docsDeleted` or `uuid`, so those fields fall back to `0` and
+ *  `undefined` respectively. See `searchInfoToEsIndex` for the
+ *  exact mapping.
  */
 
-import { buildEsClient, resolveConnection } from './esClient'
+import { resolveAdapterByConnectionId } from './searchEngine.service'
 import type {
   ApiResponse,
   EsIndexInfo,
@@ -25,18 +22,11 @@ import type {
   IndexMappingResult,
   IndexSettingsResult
 } from '../../shared/ipc'
+import type { SearchIndexInfo } from '../../shared/searchEngine'
+import type { CreateIndexInput } from '../search/adapter.types'
 
-interface CatIndexRow {
-  health?: string
-  status?: string
-  index?: string
-  uuid?: string
-  pri?: string
-  rep?: string
-  'docs.count'?: string
-  'docs.deleted'?: string
-  'store.size'?: string
-  'pri.store.size'?: string
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 function toInt(v: string | undefined, fallback = 0): number {
@@ -45,72 +35,58 @@ function toInt(v: string | undefined, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback
 }
 
-function toIndexInfo(row: CatIndexRow): EsIndexInfo | null {
-  if (!row.index) return null
+/** Map the adapter's engine-agnostic `SearchIndexInfo` to the
+ *  renderer-facing `EsIndexInfo`. The mapping is lossy on
+ *  `docsDeleted` and `uuid` — both are ES-specific fields that the
+ *  generic shape deliberately omits. The renderer's `docsDeleted`
+ *  sort degenerates to a no-op until those fields are added back. */
+function searchInfoToEsIndex(info: SearchIndexInfo): EsIndexInfo | null {
+  if (!info.name) return null
   return {
-    index: row.index,
-    health: (row.health ?? 'unknown') as EsIndexInfo['health'],
-    status: (row.status ?? 'unknown') as EsIndexInfo['status'],
-    docsCount: toInt(row['docs.count']),
-    docsDeleted: toInt(row['docs.deleted']),
-    storeSize: toInt(row['store.size']),
-    pri: toInt(row.pri),
-    rep: toInt(row.rep),
-    uuid: row.uuid
+    index: info.name,
+    health: (info.health ?? 'unknown') as EsIndexInfo['health'],
+    status: (info.status ?? 'unknown') as EsIndexInfo['status'],
+    docsCount: info.docsCount ?? 0,
+    docsDeleted: 0,
+    storeSize: toInt(info.storeSize),
+    pri: info.pri ?? 0,
+    rep: info.rep ?? 0,
+    uuid: undefined
   }
+}
+
+/** Convert a thrown error into a short, user-friendly message that
+ *  matches the wording the renderer was used to under the SDK path. */
+function describeIndexError(err: unknown, index: string): string {
+  if (err && typeof err === 'object' && 'status' in err) {
+    const status = (err as { status?: number }).status
+    if (status === 404) return `索引 "${index}" 不存在`
+    if (status === 400) return `索引名无效: ${index}`
+  }
+  return errMsg(err)
 }
 
 export async function listIndices(
   connectionId: string
 ): Promise<ApiResponse<IndexListResult>> {
   try {
-    const conn = resolveConnection(connectionId)
-    const client = buildEsClient(conn)
-    const rows = (await client.cat.indices({
-      format: 'json',
-      bytes: 'b'
-    })) as unknown as CatIndexRow[]
-    const indices = (Array.isArray(rows) ? rows : [])
-      .map(toIndexInfo)
+    const { connection, adapter } = await resolveAdapterByConnectionId(connectionId)
+    const indices = await adapter.listIndices(connection)
+    const esIndices = indices
+      .map(searchInfoToEsIndex)
       .filter((x): x is EsIndexInfo => x !== null)
-    // Newest-first by name is a stable, cheap default ordering.
-    indices.sort((a, b) => a.index.localeCompare(b.index))
+    esIndices.sort((a, b) => a.index.localeCompare(b.index))
     return {
       success: true,
       data: {
         connectionId,
-        indices,
-        indexCount: indices.length
+        indices: esIndices,
+        indexCount: esIndices.length
       }
     }
   } catch (err) {
-    return {
-      success: false,
-      error: {
-        message: err instanceof Error ? err.message : String(err)
-      }
-    }
+    return { success: false, error: { message: errMsg(err) } }
   }
-}
-
-/* ------------------- Phase 4: per-index mapping / settings ------------------- */
-
-/**
- * Surface a short, user-friendly message for a not-found index and fall back
- * to the raw error message for anything else. The @elastic/elasticsearch
- * client throws `ResponseError` (with `meta.statusCode`) on 4xx/5xx.
- */
-function describeIndexError(err: unknown, index: string): string {
-  if (err && typeof err === 'object' && 'meta' in err) {
-    const meta = (err as { meta?: { statusCode?: number } }).meta
-    if (meta?.statusCode === 404) {
-      return `索引 "${index}" 不存在`
-    }
-    if (meta?.statusCode === 400) {
-      return `索引名无效: ${index}`
-    }
-  }
-  return err instanceof Error ? err.message : String(err)
 }
 
 export async function getIndexMapping(
@@ -118,20 +94,14 @@ export async function getIndexMapping(
   index: string
 ): Promise<ApiResponse<IndexMappingResult>> {
   try {
-    const conn = resolveConnection(connectionId)
-    const client = buildEsClient(conn)
-    const payload = (await client.indices.getMapping({
-      index
-    })) as unknown as Record<string, unknown>
+    const { connection, adapter } = await resolveAdapterByConnectionId(connectionId)
+    const mapping = await adapter.getIndexMapping(connection, index)
     return {
       success: true,
-      data: { connectionId, index, mapping: payload }
+      data: { connectionId, index, mapping: mapping as Record<string, unknown> }
     }
   } catch (err) {
-    return {
-      success: false,
-      error: { message: describeIndexError(err, index) }
-    }
+    return { success: false, error: { message: describeIndexError(err, index) } }
   }
 }
 
@@ -140,54 +110,31 @@ export async function getIndexSettings(
   index: string
 ): Promise<ApiResponse<IndexSettingsResult>> {
   try {
-    const conn = resolveConnection(connectionId)
-    const client = buildEsClient(conn)
-    const payload = (await client.indices.getSettings({
-      index
-    })) as unknown as Record<string, unknown>
+    const { connection, adapter } = await resolveAdapterByConnectionId(connectionId)
+    const settings = await adapter.getIndexSettings(connection, index)
     return {
       success: true,
-      data: { connectionId, index, settings: payload }
+      data: { connectionId, index, settings: settings as Record<string, unknown> }
     }
   } catch (err) {
-    return {
-      success: false,
-      error: { message: describeIndexError(err, index) }
-    }
+    return { success: false, error: { message: describeIndexError(err, index) } }
   }
 }
 
-/* ------------------- Phase 13: index create / delete ------------------- */
-
-/** Create an index. Pass only `index` to create an empty index with
- *  cluster defaults; pass `settings` / `mappings` to configure the new
- *  index. The body is `{ settings?, mappings? }` — `mappings` (plural) is
- *  what `PUT /{index}` expects, NOT `mapping`. */
 export async function createIndex(
   req: IndexCreateRequest
 ): Promise<ApiResponse<IndexCreateResult>> {
   try {
-    const conn = resolveConnection(req.connectionId)
-    const client = buildEsClient(conn)
-    const body: Record<string, unknown> = {}
-    if (req.settings && Object.keys(req.settings).length > 0) {
-      body.settings = req.settings
-    }
-    if (req.mappings && Object.keys(req.mappings).length > 0) {
-      body.mappings = req.mappings
-    }
-    const acknowledged = await client.indices.create({
+    const { connection, adapter } = await resolveAdapterByConnectionId(
+      req.connectionId
+    )
+    const input: CreateIndexInput = {
       index: req.index,
-      body
-    })
-    return {
-      success: true,
-      data: {
-        connectionId: req.connectionId,
-        index: req.index,
-        acknowledged: Boolean(acknowledged)
-      }
+      settings: req.settings,
+      mappings: req.mappings
     }
+    const data = await adapter.createIndex(connection, input)
+    return { success: true, data }
   } catch (err) {
     return {
       success: false,
@@ -196,28 +143,15 @@ export async function createIndex(
   }
 }
 
-/** Delete an index. ES returns `{ acknowledged: true }` on success, but
- *  also returns 200 for "index not found" with `acknowledged: true` in
- *  some versions — we surface the raw client response, not a fabricated
- *  success. The renderer's delete UI pops a confirm dialog before this
- *  is called. */
 export async function deleteIndex(
   req: IndexDeleteRequest
 ): Promise<ApiResponse<IndexDeleteResult>> {
   try {
-    const conn = resolveConnection(req.connectionId)
-    const client = buildEsClient(conn)
-    const acknowledged = await client.indices.delete({
-      index: req.index
-    })
-    return {
-      success: true,
-      data: {
-        connectionId: req.connectionId,
-        index: req.index,
-        acknowledged: Boolean(acknowledged)
-      }
-    }
+    const { connection, adapter } = await resolveAdapterByConnectionId(
+      req.connectionId
+    )
+    const data = await adapter.deleteIndex(connection, req.index)
+    return { success: true, data }
   } catch (err) {
     return {
       success: false,

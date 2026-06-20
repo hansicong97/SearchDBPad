@@ -6,7 +6,18 @@
  * phase 3 adds cluster info and index listing; phase 4 adds per-index
  * mapping/settings; phase 5 adds document search; phase 7 adds
  * document create / update / delete.
+ *
+ * V0.3.0 adds generic search-engine type aliases (`EsConnection`,
+ * `EsAuthType`) sourced from `shared/searchEngine`. The shape is
+ * unchanged for now; this is purely a naming refactor that opens the
+ * door for future engines (Solr / OpenSearch / …) to plug in without
+ * another breaking IPC rewrite.
  */
+
+import type {
+  SearchAuthType,
+  SearchConnection
+} from './searchEngine'
 
 /* ------------------------------------------------------------------ */
 /* App-level channels (kept from phase 1 for future about/dialog use) */
@@ -57,7 +68,10 @@ export const IpcChannels = {
   /* Document import (phase 9) */
   ImportPickFile: 'import:pickFile',
   ImportPreview: 'import:preview',
-  ImportExecute: 'import:execute'
+  ImportExecute: 'import:execute',
+
+  /* Search engine metadata (V0.3.0 §10.2) */
+  SearchEngineDetect: 'search-engine:detect'
 } as const
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels]
@@ -77,24 +91,16 @@ export interface AppPlatformResult {
 
 /* ------------------- Connection types (phase 2) ------------------- */
 
-/** Authentication type supported by an Elasticsearch endpoint. */
-export type EsAuthType = 'none' | 'basic'
+/** Authentication type supported by an Elasticsearch endpoint. Aliased
+ *  to `SearchAuthType` so future adapters can extend the union without
+ *  touching this name. */
+export type EsAuthType = SearchAuthType
 
-/** A persisted Elasticsearch connection entry. */
-export interface EsConnection {
-  id: string
-  name: string
-  url: string
-  authType: EsAuthType
-  username?: string
-  password?: string
-  /** Folder id this connection belongs to. `null` / `undefined` means
-   *  the system "未分组" bucket — folders with no `folderId` land
-   *  there for backward compatibility with phase 2 entries. */
-  folderId?: string | null
-  createdAt: string
-  updatedAt: string
-}
+/** A persisted Elasticsearch connection entry. Aliased to
+ *  `SearchConnection`; the new `engineType` field is filled in by the
+ *  connection service on every write and backfilled on read for
+ *  pre-V0.3.0 entries. */
+export type EsConnection = SearchConnection
 
 /** Payload accepted by `connection:create` / `connection:update`. */
 export interface EsConnectionInput {

@@ -12,7 +12,8 @@ ai-dev-steps/
 │   ├── V0.2.0_RELEASES.md          布局滚动、索引操作、导入增强
 │   ├── V0.2.1_RELEASES.md          SearchDBPad 品牌与产品定位升级
 │   ├── V0.2.2_RELEASES.md          UI 布局优化与连接目录
-│   └── V0.2.3_RELEASES.md          Elasticsearch 客户端协议兼容性修复
+│   ├── V0.2.3_RELEASES.md          Elasticsearch 客户端协议兼容性修复
+│   └── V0.3.0_RELEASES.md          搜索引擎适配层与 ES 6.x-9.x 兼容重构
 └── templates/                      通用模板与流程文档
     ├── AI_COLLABORATION_GUIDE.md   与 AI 协作推进阶段的总体指引
     ├── CODE_REVIEW_CHECKLIST.md    每个阶段完成后的审查清单

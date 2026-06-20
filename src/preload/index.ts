@@ -53,6 +53,7 @@ import {
   type IndexMappingResult,
   type IndexSettingsResult
 } from '../shared/ipc'
+import type { SearchEngineServerInfo } from '../shared/searchEngine'
 
 const api = {
   getAppInfo: (): Promise<AppVersionResult> =>
@@ -238,6 +239,17 @@ const api = {
         IpcChannels.ImportExecute,
         req
       ) as Promise<ApiResponse<ImportExecuteResult>>
+  },
+
+  /* Search engine metadata (V0.3.0 §10.2). */
+  searchEngine: {
+    detect: (
+      connectionId: string
+    ): Promise<ApiResponse<SearchEngineServerInfo>> =>
+      ipcRenderer.invoke(
+        IpcChannels.SearchEngineDetect,
+        connectionId
+      ) as Promise<ApiResponse<SearchEngineServerInfo>>
   }
 }
 
