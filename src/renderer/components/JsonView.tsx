@@ -92,8 +92,8 @@ export default function JsonView({
       </Space>
       <pre
         style={{
-          background: '#fafafa',
-          border: '1px solid #f0f0f0',
+          background: 'var(--ant-color-bg-layout)',
+          border: '1px solid var(--ant-color-border-secondary)',
           borderRadius: 4,
           padding: 12,
           margin: 0,

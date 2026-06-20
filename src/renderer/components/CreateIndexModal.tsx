@@ -325,10 +325,10 @@ export default function CreateIndexModal({
         {importEnabled ? (
           <div
             style={{
-              border: '1px dashed #d9d9d9',
+              border: '1px dashed var(--ant-color-border)',
               borderRadius: 6,
               padding: 12,
-              background: '#fafafa'
+              background: 'var(--ant-color-bg-layout)'
             }}
           >
             <Form.Item label="文件" required>

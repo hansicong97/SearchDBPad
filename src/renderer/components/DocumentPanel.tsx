@@ -64,8 +64,8 @@ function SourceCell({ value }: { value: Record<string, unknown> | null }): JSX.E
   return (
     <pre
       style={{
-        background: '#fafafa',
-        border: '1px solid #f0f0f0',
+        background: 'var(--ant-color-bg-layout)',
+        border: '1px solid var(--ant-color-border-secondary)',
         borderRadius: 4,
         padding: 8,
         margin: 0,
@@ -259,8 +259,17 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
     totalRelation === 'gte' ? `≥ ${total.toLocaleString('en-US')}` : total.toLocaleString('en-US')
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <Space style={{ marginBottom: 12 }} size="middle">
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        minHeight: 0,
+        overflow: 'hidden',
+        padding: 12
+      }}
+    >
+      <Space style={{ marginBottom: 12, flex: '0 0 auto' }} size="middle">
         <Button
           icon={<ReloadOutlined />}
           onClick={handleRefresh}
@@ -293,26 +302,29 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
       ) : loading && hits.length === 0 ? (
         <Skeleton active paragraph={{ rows: 8 }} />
       ) : (
-        <Table<DocumentHit>
-          rowKey="_id"
-          columns={columns}
-          dataSource={hits}
-          loading={loading}
-          size="small"
-          locale={{
-            emptyText: <Empty description="该索引当前没有匹配的文档" />
-          }}
-          pagination={{
-            current: page,
-            pageSize,
-            total,
-            showSizeChanger: true,
-            pageSizeOptions: [10, 20, 50, 100],
-            showTotal: (t) =>
-              totalRelation === 'gte' ? `≥ ${t.toLocaleString('en-US')} 条` : `共 ${t} 条`,
-            onChange: handlePageChange
-          }}
-        />
+        <div style={{ flex: '1 1 auto', minHeight: 0, overflow: 'auto' }}>
+          <Table<DocumentHit>
+            rowKey="_id"
+            columns={columns}
+            dataSource={hits}
+            loading={loading}
+            size="small"
+            scroll={{ x: 'max-content' }}
+            locale={{
+              emptyText: <Empty description="该索引当前没有匹配的文档" />
+            }}
+            pagination={{
+              current: page,
+              pageSize,
+              total,
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 50, 100],
+              showTotal: (t) =>
+                totalRelation === 'gte' ? `≥ ${t.toLocaleString('en-US')} 条` : `共 ${t} 条`,
+              onChange: handlePageChange
+            }}
+          />
+        </div>
       )}
 
       <DocumentEditorModal

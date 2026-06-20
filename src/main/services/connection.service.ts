@@ -7,12 +7,23 @@
  *
  * Phase 2 scope: CRUD on locally persisted connections + a `test` call that
  * pings the configured Elasticsearch endpoint and returns basic cluster info.
+ *
+ * Phase 15 (UI update): adds folder CRUD. Folders are user-defined groups
+ * rendered in the sidebar; deleting a folder keeps its connections
+ * (they move to the implicit "未分组" bucket).
  */
 
 import { randomUUID } from 'node:crypto'
-import { loadConnections, saveConnections } from '../store/connectionStore'
+import {
+  loadConnectionFolders,
+  loadConnections,
+  saveConnectionFolders,
+  saveConnections
+} from '../store/connectionStore'
 import type {
   ApiResponse,
+  ConnectionFolder,
+  ConnectionFolderInput,
   ConnectionTestResult,
   EsConnection,
   EsConnectionInput
@@ -27,7 +38,10 @@ export class ConnectionValidationError extends Error {
   }
 }
 
-function validateInput(input: EsConnectionInput, isUpdate: boolean): void {
+function validateConnectionInput(
+  input: EsConnectionInput,
+  isUpdate: boolean
+): void {
   if (!input.name || !input.name.trim()) {
     throw new ConnectionValidationError('连接名称不能为空')
   }
@@ -50,13 +64,40 @@ function validateInput(input: EsConnectionInput, isUpdate: boolean): void {
   }
 }
 
-/* ------------------------------- CRUD API ------------------------------- */
+function validateFolderInput(input: ConnectionFolderInput, isUpdate: boolean): void {
+  if (!input.name || !input.name.trim()) {
+    throw new ConnectionValidationError('目录名称不能为空')
+  }
+  if (isUpdate && !input.id) {
+    throw new ConnectionValidationError('更新目录时缺少 id')
+  }
+}
+
+/** Reject `folderId` values that don't resolve to an existing folder.
+ *  `null` / `undefined` always pass (means "未分组"). */
+function assertFolderExists(folderId: string | null | undefined): void {
+  if (!folderId) return
+  const folders = loadConnectionFolders()
+  if (!folders.some((f) => f.id === folderId)) {
+    throw new ConnectionValidationError('所选目录不存在')
+  }
+}
+
+/* ------------------------------- Helpers ------------------------------- */
 
 function nowIso(): string {
   return new Date().toISOString()
 }
 
-function normalize(input: EsConnectionInput): EsConnection {
+/** Lowercased name comparison for the unique-name rule. */
+function nameTaken(name: string, ignoreId?: string): boolean {
+  const target = name.trim().toLowerCase()
+  return loadConnectionFolders().some(
+    (f) => f.name.trim().toLowerCase() === target && f.id !== ignoreId
+  )
+}
+
+function normalizeConnection(input: EsConnectionInput): EsConnection {
   const authType = input.authType
   return {
     id: input.id ?? randomUUID(),
@@ -65,10 +106,22 @@ function normalize(input: EsConnectionInput): EsConnection {
     authType,
     username: authType === 'basic' ? input.username?.trim() : undefined,
     password: authType === 'basic' ? input.password : undefined,
+    folderId: input.folderId ?? null,
     createdAt: nowIso(),
     updatedAt: nowIso()
   }
 }
+
+function normalizeFolder(input: ConnectionFolderInput): ConnectionFolder {
+  return {
+    id: input.id ?? randomUUID(),
+    name: input.name.trim(),
+    createdAt: nowIso(),
+    updatedAt: nowIso()
+  }
+}
+
+/* ------------------------ Connections CRUD ------------------------ */
 
 export function listConnections(): ApiResponse<EsConnection[]> {
   try {
@@ -82,8 +135,9 @@ export function createConnection(
   input: EsConnectionInput
 ): ApiResponse<EsConnection> {
   try {
-    validateInput({ ...input, id: undefined }, false)
-    const conn = normalize(input)
+    validateConnectionInput({ ...input, id: undefined }, false)
+    assertFolderExists(input.folderId ?? null)
+    const conn = normalizeConnection(input)
     const list = loadConnections()
     list.push(conn)
     saveConnections(list)
@@ -97,7 +151,8 @@ export function updateConnection(
   input: EsConnectionInput
 ): ApiResponse<EsConnection> {
   try {
-    validateInput(input, true)
+    validateConnectionInput(input, true)
+    assertFolderExists(input.folderId ?? null)
     const list = loadConnections()
     const idx = list.findIndex((c) => c.id === input.id)
     if (idx < 0) {
@@ -113,6 +168,7 @@ export function updateConnection(
         input.authType === 'basic' ? input.username?.trim() : undefined,
       password:
         input.authType === 'basic' ? input.password : undefined,
+      folderId: input.folderId ?? existing.folderId ?? null,
       updatedAt: nowIso()
     }
     list[idx] = merged
@@ -131,6 +187,86 @@ export function deleteConnection(id: string): ApiResponse<{ id: string }> {
       return { success: false, error: { message: '未找到对应连接' } }
     }
     saveConnections(next)
+    return { success: true, data: { id } }
+  } catch (err) {
+    return { success: false, error: { message: (err as Error).message } }
+  }
+}
+
+/* -------------------------- Folder CRUD -------------------------- */
+
+export function listConnectionFolders(): ApiResponse<ConnectionFolder[]> {
+  try {
+    return { success: true, data: loadConnectionFolders() }
+  } catch (err) {
+    return { success: false, error: { message: (err as Error).message } }
+  }
+}
+
+export function createConnectionFolder(
+  input: ConnectionFolderInput
+): ApiResponse<ConnectionFolder> {
+  try {
+    validateFolderInput({ ...input, id: undefined }, false)
+    const name = input.name.trim()
+    if (nameTaken(name)) {
+      throw new ConnectionValidationError('目录名称已存在')
+    }
+    const folder = normalizeFolder({ ...input, name })
+    const list = loadConnectionFolders()
+    list.push(folder)
+    saveConnectionFolders(list)
+    return { success: true, data: folder }
+  } catch (err) {
+    return { success: false, error: { message: (err as Error).message } }
+  }
+}
+
+export function updateConnectionFolder(
+  input: ConnectionFolderInput
+): ApiResponse<ConnectionFolder> {
+  try {
+    validateFolderInput(input, true)
+    const name = input.name.trim()
+    if (nameTaken(name, input.id)) {
+      throw new ConnectionValidationError('目录名称已存在')
+    }
+    const list = loadConnectionFolders()
+    const idx = list.findIndex((f) => f.id === input.id)
+    if (idx < 0) {
+      return { success: false, error: { message: '未找到对应目录' } }
+    }
+    const merged: ConnectionFolder = {
+      ...list[idx],
+      name,
+      updatedAt: nowIso()
+    }
+    list[idx] = merged
+    saveConnectionFolders(list)
+    return { success: true, data: merged }
+  } catch (err) {
+    return { success: false, error: { message: (err as Error).message } }
+  }
+}
+
+/** Delete a folder and move any connections that belonged to it into
+ *  the implicit "未分组" bucket (folderId = null). */
+export function deleteConnectionFolder(
+  id: string
+): ApiResponse<{ id: string }> {
+  try {
+    const folders = loadConnectionFolders()
+    const next = folders.filter((f) => f.id !== id)
+    if (next.length === folders.length) {
+      return { success: false, error: { message: '未找到对应目录' } }
+    }
+    saveConnectionFolders(next)
+
+    const conns = loadConnections().map((c) =>
+      c.folderId === id ? { ...c, folderId: null, updatedAt: nowIso() } : c
+    )
+    saveConnections(conns)
+
     return { success: true, data: { id } }
   } catch (err) {
     return { success: false, error: { message: (err as Error).message } }
@@ -168,9 +304,9 @@ export async function testConnection(
   input: EsConnectionInput
 ): Promise<ApiResponse<ConnectionTestResult>> {
   try {
-    validateInput({ ...input, id: input.id }, false)
+    validateConnectionInput({ ...input, id: input.id }, false)
     // Build an in-memory connection (not persisted) for the test request.
-    const conn: EsConnection = normalize(input)
+    const conn: EsConnection = normalizeConnection(input)
     const headers = buildAuthHeader(conn)
     const base = conn.url
 

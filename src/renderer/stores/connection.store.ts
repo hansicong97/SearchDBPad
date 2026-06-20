@@ -9,6 +9,8 @@
 import { create } from 'zustand'
 import type {
   ApiResponse,
+  ConnectionFolder,
+  ConnectionFolderInput,
   ConnectionTestResult,
   EsConnection,
   EsConnectionInput
@@ -20,6 +22,10 @@ interface ConnectionState {
   error: string | null
   lastTestResult: ConnectionTestResult | null
 
+  folders: ConnectionFolder[]
+  folderLoading: boolean
+  folderError: string | null
+
   fetch: () => Promise<void>
   create: (input: EsConnectionInput) => Promise<boolean>
   update: (input: EsConnectionInput) => Promise<boolean>
@@ -28,6 +34,11 @@ interface ConnectionState {
     input: EsConnectionInput
   ) => Promise<ConnectionTestOutcome>
   clearError: () => void
+
+  fetchFolders: () => Promise<void>
+  createFolder: (input: ConnectionFolderInput) => Promise<boolean>
+  updateFolder: (input: ConnectionFolderInput) => Promise<boolean>
+  removeFolder: (id: string) => Promise<boolean>
 }
 
 /** Result of `test`: discriminated union so callers don't have to read
@@ -52,6 +63,10 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
   loading: false,
   error: null,
   lastTestResult: null,
+
+  folders: [],
+  folderLoading: false,
+  folderError: null,
 
   fetch: async () => {
     set({ loading: true, error: null })
@@ -112,5 +127,63 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     return { ok: false, error: res.error?.message ?? '测试连接失败' }
   },
 
-  clearError: () => set({ error: null })
+  clearError: () => set({ error: null }),
+
+  /* -------------------------- Folder CRUD -------------------------- */
+
+  fetchFolders: async () => {
+    set({ folderLoading: true, folderError: null })
+    const res = await window.esApi.connectionFolders.list()
+    if (res.success) {
+      set({ folders: res.data ?? [], folderLoading: false })
+    } else {
+      set({
+        folderLoading: false,
+        folderError: res.error?.message ?? '加载目录失败'
+      })
+    }
+  },
+
+  createFolder: async (input) => {
+    set({ folderError: null })
+    const res = await window.esApi.connectionFolders.create(input)
+    if (res.success && res.data) {
+      set((state) => ({ folders: [...state.folders, res.data as ConnectionFolder] }))
+      return true
+    }
+    set({ folderError: res.error?.message ?? '新建目录失败' })
+    return false
+  },
+
+  updateFolder: async (input) => {
+    set({ folderError: null })
+    const res = await window.esApi.connectionFolders.update(input)
+    if (res.success && res.data) {
+      const updated = res.data
+      set((state) => ({
+        folders: state.folders.map((f) => (f.id === updated.id ? updated : f))
+      }))
+      return true
+    }
+    set({ folderError: res.error?.message ?? '更新目录失败' })
+    return false
+  },
+
+  removeFolder: async (id) => {
+    set({ folderError: null })
+    const res = await window.esApi.connectionFolders.delete(id)
+    if (res.success) {
+      set((state) => ({
+        folders: state.folders.filter((f) => f.id !== id),
+        // Connections inside the deleted folder are now folderId = null
+        // on disk; refresh the list so the sidebar reflects that.
+        connections: state.connections.map((c) =>
+          c.folderId === id ? { ...c, folderId: null } : c
+        )
+      }))
+      return true
+    }
+    set({ folderError: res.error?.message ?? '删除目录失败' })
+    return false
+  }
 }))

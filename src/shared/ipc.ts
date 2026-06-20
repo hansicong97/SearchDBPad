@@ -23,6 +23,12 @@ export const IpcChannels = {
   ConnectionDelete: 'connection:delete',
   ConnectionTest: 'connection:test',
 
+  /* Connection folders (phase 15 UI update) */
+  ConnectionFolderList: 'connection-folder:list',
+  ConnectionFolderCreate: 'connection-folder:create',
+  ConnectionFolderUpdate: 'connection-folder:update',
+  ConnectionFolderDelete: 'connection-folder:delete',
+
   /* Cluster info and index list (phase 3) */
   ClusterInfo: 'cluster:info',
   ClusterHealth: 'cluster:health',
@@ -82,6 +88,10 @@ export interface EsConnection {
   authType: EsAuthType
   username?: string
   password?: string
+  /** Folder id this connection belongs to. `null` / `undefined` means
+   *  the system "未分组" bucket — folders with no `folderId` land
+   *  there for backward compatibility with phase 2 entries. */
+  folderId?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -94,6 +104,21 @@ export interface EsConnectionInput {
   authType: EsAuthType
   username?: string
   password?: string
+  folderId?: string | null
+}
+
+/** A user-defined folder for grouping connections in the sidebar. */
+export interface ConnectionFolder {
+  id: string
+  name: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** Payload accepted by `connection-folder:create` / `:update`. */
+export interface ConnectionFolderInput {
+  id?: string
+  name: string
 }
 
 /** Result of a `connection:test` call. */

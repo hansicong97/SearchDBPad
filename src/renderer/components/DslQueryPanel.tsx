@@ -63,8 +63,8 @@ function HitRow({ value }: { value: Record<string, unknown> | null }): JSX.Eleme
   return (
     <pre
       style={{
-        background: '#fafafa',
-        border: '1px solid #f0f0f0',
+        background: 'var(--ant-color-bg-layout)',
+        border: '1px solid var(--ant-color-border-secondary)',
         borderRadius: 4,
         padding: 8,
         margin: 0,
@@ -198,7 +198,7 @@ export default function DslQueryPanel(): JSX.Element {
 
         <div
           style={{
-            border: '1px solid #d9d9d9',
+            border: '1px solid var(--ant-color-border)',
             borderRadius: 4,
             overflow: 'hidden',
             background: '#1e1e1e'

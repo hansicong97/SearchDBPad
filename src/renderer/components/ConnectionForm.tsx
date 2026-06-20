@@ -19,12 +19,17 @@ import {
   Input,
   Modal,
   Radio,
+  Select,
   Space,
   Typography,
   Button,
   Alert
 } from 'antd'
-import type { ConnectionTestResult, EsConnection } from '@shared/ipc'
+import type {
+  ConnectionFolder,
+  ConnectionTestResult,
+  EsConnection
+} from '@shared/ipc'
 
 const { Text } = Typography
 
@@ -35,11 +40,13 @@ export interface ConnectionFormValues {
   authType: 'none' | 'basic'
   username?: string
   password?: string
+  folderId?: string | null
 }
 
 interface Props {
   open: boolean
   initial?: EsConnection | null
+  folders: ConnectionFolder[]
   submitting?: boolean
   testing?: boolean
   testResult?: ConnectionTestResult | null
@@ -52,6 +59,7 @@ interface Props {
 export default function ConnectionForm({
   open,
   initial,
+  folders,
   submitting,
   testing,
   testResult,
@@ -72,11 +80,12 @@ export default function ConnectionForm({
         url: initial.url,
         authType: initial.authType,
         username: initial.username,
-        password: initial.password
+        password: initial.password,
+        folderId: initial.folderId ?? null
       })
     } else {
       form.resetFields()
-      form.setFieldsValue({ authType: 'none' })
+      form.setFieldsValue({ authType: 'none', folderId: null })
     }
   }, [open, initial, form])
 
@@ -143,6 +152,19 @@ export default function ConnectionForm({
             <Radio.Button value="none">无认证</Radio.Button>
             <Radio.Button value="basic">Basic Auth</Radio.Button>
           </Radio.Group>
+        </Form.Item>
+
+        <Form.Item label="目录" name="folderId">
+          <Select
+            allowClear
+            placeholder="未分组"
+            options={folders.map((f) => ({ label: f.name, value: f.id }))}
+            notFoundContent={
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                还没有目录，可先保存为“未分组”
+              </Text>
+            }
+          />
         </Form.Item>
 
         {authType === 'basic' && (

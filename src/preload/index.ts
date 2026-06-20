@@ -22,6 +22,8 @@ import {
   type AppVersionResult,
   type ClusterHealth,
   type ClusterInfo,
+  type ConnectionFolder,
+  type ConnectionFolderInput,
   type ConnectionRef,
   type ConnectionTestResult,
   type DocumentDeleteRequest,
@@ -85,6 +87,32 @@ const api = {
         IpcChannels.ConnectionTest,
         input
       ) as Promise<ApiResponse<ConnectionTestResult>>
+  },
+
+  connectionFolders: {
+    list: (): Promise<ApiResponse<ConnectionFolder[]>> =>
+      ipcRenderer.invoke(
+        IpcChannels.ConnectionFolderList
+      ) as Promise<ApiResponse<ConnectionFolder[]>>,
+    create: (
+      input: ConnectionFolderInput
+    ): Promise<ApiResponse<ConnectionFolder>> =>
+      ipcRenderer.invoke(
+        IpcChannels.ConnectionFolderCreate,
+        input
+      ) as Promise<ApiResponse<ConnectionFolder>>,
+    update: (
+      input: ConnectionFolderInput
+    ): Promise<ApiResponse<ConnectionFolder>> =>
+      ipcRenderer.invoke(
+        IpcChannels.ConnectionFolderUpdate,
+        input
+      ) as Promise<ApiResponse<ConnectionFolder>>,
+    delete: (id: string): Promise<ApiResponse<{ id: string }>> =>
+      ipcRenderer.invoke(
+        IpcChannels.ConnectionFolderDelete,
+        id
+      ) as Promise<ApiResponse<{ id: string }>>
   },
 
   cluster: {

@@ -248,7 +248,7 @@ export default function DocumentEditorModal({
         >
           <div
             style={{
-              border: '1px solid #d9d9d9',
+              border: '1px solid var(--ant-color-border)',
               borderRadius: 4,
               overflow: 'hidden',
               background: '#1e1e1e'

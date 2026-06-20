@@ -92,7 +92,24 @@ export default function WorkspacePage(): JSX.Element {
   if (!activeId || !activeConnection) {
     return (
       <Card
-        style={{ flex: 1, minWidth: 0, minHeight: 0 }}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          minHeight: 0,
+          borderRadius: 0,
+          border: 0,
+          height: '100%'
+        }}
+        styles={{
+          body: {
+            padding: 24,
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            alignItems: 'center',
+            height: '100%'
+          }
+        }}
         title={
           <Title level={4} style={{ margin: 0 }}>
             工作台
@@ -121,9 +138,12 @@ export default function WorkspacePage(): JSX.Element {
         flex: 1,
         minWidth: 0,
         minHeight: 0,
+        height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden'
+        overflow: 'hidden',
+        borderRadius: 0,
+        border: 0
       }}
       title={
         <Space>
@@ -148,16 +168,26 @@ export default function WorkspacePage(): JSX.Element {
         body: {
           display: 'flex',
           flexDirection: 'column',
-          gap: 16,
+          gap: 0,
           overflow: 'hidden',
           flex: 1,
           minHeight: 0,
-          padding: 16
+          padding: 0
         }
       }}
     >
-      <div style={{ flex: '0 0 auto' }}>
-        <Card size="small" styles={{ body: { padding: 16 } }}>
+      <div
+        style={{
+          flex: '0 0 auto',
+          borderBottom: '1px solid var(--ant-color-border-secondary)'
+        }}
+      >
+        <Card
+          size="small"
+          bordered={false}
+          style={{ borderRadius: 0 }}
+          styles={{ body: { padding: 12 } }}
+        >
           <ClusterInfoCard />
         </Card>
       </div>

@@ -14,7 +14,8 @@
  * are NOT implemented here. They will be added in later phases.
  */
 
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
+import type { MenuItemConstructorOptions } from 'electron'
 import path from 'node:path'
 import { IpcChannels } from '../shared/ipc'
 import type {
@@ -27,10 +28,14 @@ import type {
 } from '../shared/ipc'
 import {
   createConnection,
+  createConnectionFolder,
   deleteConnection,
+  deleteConnectionFolder,
   listConnections,
+  listConnectionFolders,
   testConnection,
-  updateConnection
+  updateConnection,
+  updateConnectionFolder
 } from './services/connection.service'
 import { getClusterHealth, getClusterInfo } from './services/cluster.service'
 import {
@@ -124,6 +129,20 @@ function registerIpcHandlers(): void {
   )
   ipcMain.handle(IpcChannels.ConnectionTest, (_evt, input) =>
     testConnection(input)
+  )
+
+  /* Connection folders (phase 15 UI update) */
+  ipcMain.handle(IpcChannels.ConnectionFolderList, () =>
+    listConnectionFolders()
+  )
+  ipcMain.handle(IpcChannels.ConnectionFolderCreate, (_evt, input) =>
+    createConnectionFolder(input)
+  )
+  ipcMain.handle(IpcChannels.ConnectionFolderUpdate, (_evt, input) =>
+    updateConnectionFolder(input)
+  )
+  ipcMain.handle(IpcChannels.ConnectionFolderDelete, (_evt, id) =>
+    deleteConnectionFolder(id)
   )
 
   /* Cluster info and index list (phase 3) */
@@ -239,7 +258,120 @@ async function pickImportFile(
   }
 }
 
+/**
+ * Build the native application menu in Chinese. Without this, Electron
+ * falls back to the OS default English menu (File / Edit / View / Window
+ * / Help) which doesn't match a zh-CN UI.
+ *
+ * Editing-related items use built-in `role` values so accelerators and
+ * labels stay in sync with the host OS language. Developer tools and the
+ * reload commands are only exposed in dev builds.
+ */
+function buildAppMenu(dev: boolean): Menu {
+  const viewSubmenu: MenuItemConstructorOptions[] = []
+  if (dev) {
+    viewSubmenu.push(
+      { role: 'reload', label: '重新加载', accelerator: 'CmdOrCtrl+R' },
+      {
+        role: 'forceReload',
+        label: '强制重载',
+        accelerator: 'CmdOrCtrl+Shift+R'
+      },
+      {
+        role: 'toggleDevTools',
+        label: '切换开发者工具',
+        accelerator: 'F12'
+      },
+      { type: 'separator' }
+    )
+  }
+  viewSubmenu.push(
+    { role: 'resetZoom', label: '重置缩放', accelerator: 'CmdOrCtrl+0' },
+    { role: 'zoomIn', label: '放大', accelerator: 'CmdOrCtrl+=' },
+    { role: 'zoomOut', label: '缩小', accelerator: 'CmdOrCtrl+-' },
+    { type: 'separator' },
+    { role: 'togglefullscreen', label: '全屏', accelerator: 'F11' }
+  )
+
+  const windowSubmenu: MenuItemConstructorOptions[] = [
+    { role: 'minimize', label: '最小化', accelerator: 'CmdOrCtrl+M' },
+    { role: 'close', label: '关闭', accelerator: 'CmdOrCtrl+W' },
+    { type: 'separator' },
+    {
+      label: '窗口置顶',
+      type: 'checkbox',
+      checked: BrowserWindow.getFocusedWindow()?.isAlwaysOnTop() ?? false,
+      click: (menuItem) => {
+        const win = BrowserWindow.getFocusedWindow()
+        if (!win) return
+        const next = !menuItem.checked
+        win.setAlwaysOnTop(next)
+        menuItem.checked = next
+      }
+    }
+  ]
+
+  const template: MenuItemConstructorOptions[] = [
+    {
+      label: '文件',
+      submenu: [
+        {
+          label: '退出',
+          accelerator: 'CmdOrCtrl+Q',
+          click: () => {
+            app.quit()
+          }
+        }
+      ]
+    },
+    {
+      label: '编辑',
+      submenu: [
+        { role: 'undo', label: '撤销' },
+        { role: 'redo', label: '重做' },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切' },
+        { role: 'copy', label: '复制' },
+        { role: 'paste', label: '粘贴' },
+        { role: 'selectAll', label: '全选' },
+        { role: 'delete', label: '删除' }
+      ]
+    },
+    {
+      label: '视图',
+      submenu: viewSubmenu
+    },
+    {
+      label: '窗口',
+      submenu: windowSubmenu
+    },
+    {
+      label: '帮助',
+      submenu: [
+        {
+          label: '关于 SearchDBPad',
+          click: () => {
+            void dialog.showMessageBox({
+              type: 'info',
+              title: '关于 SearchDBPad',
+              message: `SearchDBPad ${app.getVersion()}`,
+              detail:
+                `搜索引擎数据管理桌面客户端\n` +
+                `Electron ${process.versions.electron ?? 'unknown'}\n` +
+                `Node ${process.versions.node ?? 'unknown'}\n` +
+                `Chrome ${process.versions.chrome ?? 'unknown'}`,
+              buttons: ['确定']
+            })
+          }
+        }
+      ]
+    }
+  ]
+  return Menu.buildFromTemplate(template)
+}
+
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(buildAppMenu(isDev))
   registerIpcHandlers()
   createWindow()
 

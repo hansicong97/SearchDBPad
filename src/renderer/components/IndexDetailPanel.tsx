@@ -92,7 +92,9 @@ export default function IndexDetailPanel({
         minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden'
+        overflow: 'hidden',
+        borderRadius: 0,
+        border: 0
       }}
       title={
         <Space>
@@ -131,7 +133,7 @@ export default function IndexDetailPanel({
       }
       styles={{
         body: {
-          padding: 16,
+          padding: 0,
           display: 'flex',
           flexDirection: 'column',
           flex: 1,
@@ -143,8 +145,9 @@ export default function IndexDetailPanel({
       <Tabs
         activeKey={activeTab}
         onChange={(k) => setActiveTab(k as TabKey)}
+        className="workspace-tabs"
         style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
-        tabBarStyle={{ flex: '0 0 auto', marginBottom: 12 }}
+        tabBarStyle={{ flex: '0 0 auto', marginBottom: 0, padding: '0 12px' }}
         items={[
           {
             key: 'documents',

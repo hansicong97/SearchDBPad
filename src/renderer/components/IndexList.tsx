@@ -226,9 +226,9 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
         flexDirection: 'column',
         height: '100%',
         minHeight: 0,
-        background: '#fff',
-        borderRadius: 6,
-        border: '1px solid #f0f0f0',
+        background: 'var(--ant-color-bg-container)',
+        borderRadius: 0,
+        border: 0,
         overflow: 'hidden'
       }}
     >
@@ -236,8 +236,8 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
         style={{
           flex: '0 0 auto',
           padding: '12px 16px',
-          borderBottom: '1px solid #f0f0f0',
-          background: '#fafafa'
+          borderBottom: '1px solid var(--ant-color-border-secondary)',
+          background: 'var(--ant-color-bg-layout)'
         }}
       >
         <Space size="middle" wrap>
@@ -276,7 +276,7 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
         </Space>
       </div>
 
-      <div style={{ flex: '1 1 auto', minHeight: 0, overflow: 'auto' }}>
+      <div style={{ flex: '1 1 auto', minHeight: 0, overflow: 'auto', padding: '0 8px' }}>
         {error ? (
           <div style={{ padding: 16 }}>
             <Text type="danger">无法加载索引列表：{error}</Text>
