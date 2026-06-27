@@ -36,6 +36,7 @@ import {
   type EsConnectionInput,
   type ExportPickPathRequest,
   type ExportPickPathResult,
+  type ExportProgress,
   type ExportRequest,
   type ExportResult,
   type ImportExecuteRequest,
@@ -44,16 +45,37 @@ import {
   type ImportPickFileResult,
   type ImportPreviewRequest,
   type ImportPreviewResult,
+  type ImportProgress,
+  type AliasListResult,
+  type AliasModifyRequest,
+  type AliasModifyResult,
   type IndexCreateRequest,
   type IndexCreateResult,
   type IndexDeleteRequest,
   type IndexDeleteResult,
   type IndexDetailRequest,
+  type IndexLifecycleRequest,
+  type IndexLifecycleResult,
   type IndexListResult,
   type IndexMappingResult,
-  type IndexSettingsResult
+  type IndexSettingsResult,
+  type IndexTemplateCreateRequest,
+  type IndexTemplateDeleteRequest,
+  type IndexTemplateGetRequest,
+  type IndexTemplateGetResult,
+  type IndexTemplateListResult,
+  type IndexTemplateModifyResult,
+  type IndexUpdateMappingRequest,
+  type IndexUpdateMappingResult,
+  type IndexUpdateSettingsRequest,
+  type IndexUpdateSettingsResult,
+  type ShardCancelRequest,
+  type ShardListResult,
+  type ShardRelocateRequest,
+  type ShardRerouteResult
 } from '../shared/ipc'
 import type { SearchEngineServerInfo } from '../shared/searchEngine'
+import type { DslFavorite, DslFavoriteInput } from '../shared/ipc'
 
 const api = {
   getAppInfo: (): Promise<AppVersionResult> =>
@@ -166,7 +188,59 @@ const api = {
       ipcRenderer.invoke(
         IpcChannels.IndexDelete,
         req
-      ) as Promise<ApiResponse<IndexDeleteResult>>
+      ) as Promise<ApiResponse<IndexDeleteResult>>,
+    close: (
+      req: IndexLifecycleRequest
+    ): Promise<ApiResponse<IndexLifecycleResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexClose,
+        req
+      ) as Promise<ApiResponse<IndexLifecycleResult>>,
+    open: (
+      req: IndexLifecycleRequest
+    ): Promise<ApiResponse<IndexLifecycleResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexOpen,
+        req
+      ) as Promise<ApiResponse<IndexLifecycleResult>>,
+    updateSettings: (
+      req: IndexUpdateSettingsRequest
+    ): Promise<ApiResponse<IndexUpdateSettingsResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexUpdateSettings,
+        req
+      ) as Promise<ApiResponse<IndexUpdateSettingsResult>>,
+    updateMapping: (
+      req: IndexUpdateMappingRequest
+    ): Promise<ApiResponse<IndexUpdateMappingResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexUpdateMapping,
+        req
+      ) as Promise<ApiResponse<IndexUpdateMappingResult>>,
+    /** V0.3.9 E-7: list shards for a single index. */
+    shards: (
+      req: IndexDetailRequest
+    ): Promise<ApiResponse<ShardListResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.ShardList,
+        req
+      ) as Promise<ApiResponse<ShardListResult>>,
+    /** V0.3.9 E-7: relocate a started shard between two nodes. */
+    relocateShard: (
+      req: ShardRelocateRequest
+    ): Promise<ApiResponse<ShardRerouteResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.ShardRelocate,
+        req
+      ) as Promise<ApiResponse<ShardRerouteResult>>,
+    /** V0.3.9 E-7: cancel the allocation of an unassigned shard. */
+    cancelShardAllocation: (
+      req: ShardCancelRequest
+    ): Promise<ApiResponse<ShardRerouteResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.ShardCancelAllocation,
+        req
+      ) as Promise<ApiResponse<ShardRerouteResult>>
   },
 
   documents: {
@@ -214,7 +288,18 @@ const api = {
       ipcRenderer.invoke(
         IpcChannels.ExportExecute,
         req
-      ) as Promise<ApiResponse<ExportResult>>
+      ) as Promise<ApiResponse<ExportResult>>,
+    /** V0.3.7 B-3: subscribe to export progress events. Returns
+     *  an unsubscribe function — callers should call it on
+     *  unmount to avoid leaking listeners. */
+    onProgress: (cb: (progress: ExportProgress) => void): (() => void) => {
+      const handler = (_evt: unknown, progress: ExportProgress): void =>
+        cb(progress)
+      ipcRenderer.on(IpcChannels.ExportProgressEvent, handler)
+      return () => {
+        ipcRenderer.removeListener(IpcChannels.ExportProgressEvent, handler)
+      }
+    }
   },
 
   importDocs: {
@@ -238,7 +323,17 @@ const api = {
       ipcRenderer.invoke(
         IpcChannels.ImportExecute,
         req
-      ) as Promise<ApiResponse<ImportExecuteResult>>
+      ) as Promise<ApiResponse<ImportExecuteResult>>,
+    /** V0.3.7 B-3: subscribe to import progress events. Returns
+     *  an unsubscribe function. */
+    onProgress: (cb: (progress: ImportProgress) => void): (() => void) => {
+      const handler = (_evt: unknown, progress: ImportProgress): void =>
+        cb(progress)
+      ipcRenderer.on(IpcChannels.ImportProgressEvent, handler)
+      return () => {
+        ipcRenderer.removeListener(IpcChannels.ImportProgressEvent, handler)
+      }
+    }
   },
 
   /* Search engine metadata (V0.3.0 §10.2). */
@@ -250,6 +345,90 @@ const api = {
         IpcChannels.SearchEngineDetect,
         connectionId
       ) as Promise<ApiResponse<SearchEngineServerInfo>>
+  },
+
+  /* Alias management (V0.3.4 A-4) */
+  aliases: {
+    list: (
+      ref: ConnectionRef
+    ): Promise<ApiResponse<AliasListResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.AliasList,
+        ref
+      ) as Promise<ApiResponse<AliasListResult>>,
+    add: (
+      req: AliasModifyRequest
+    ): Promise<ApiResponse<AliasModifyResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.AliasAdd,
+        req
+      ) as Promise<ApiResponse<AliasModifyResult>>,
+    delete: (
+      req: AliasModifyRequest
+    ): Promise<ApiResponse<AliasModifyResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.AliasDelete,
+        req
+      ) as Promise<ApiResponse<AliasModifyResult>>
+  },
+
+  /* Index templates (V0.3.4 A-5) */
+  indexTemplates: {
+    list: (
+      ref: ConnectionRef
+    ): Promise<ApiResponse<IndexTemplateListResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexTemplateList,
+        ref
+      ) as Promise<ApiResponse<IndexTemplateListResult>>,
+    get: (
+      req: IndexTemplateGetRequest
+    ): Promise<ApiResponse<IndexTemplateGetResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexTemplateGet,
+        req
+      ) as Promise<ApiResponse<IndexTemplateGetResult>>,
+    create: (
+      req: IndexTemplateCreateRequest
+    ): Promise<ApiResponse<IndexTemplateModifyResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexTemplateCreate,
+        req
+      ) as Promise<ApiResponse<IndexTemplateModifyResult>>,
+    delete: (
+      req: IndexTemplateDeleteRequest
+    ): Promise<ApiResponse<IndexTemplateModifyResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexTemplateDelete,
+        req
+      ) as Promise<ApiResponse<IndexTemplateModifyResult>>
+  },
+
+  /* DSL favorites (V0.3.5 B-4) */
+  dslFavorites: {
+    list: (): Promise<ApiResponse<DslFavorite[]>> =>
+      ipcRenderer.invoke(
+        IpcChannels.DslFavoriteList
+      ) as Promise<ApiResponse<DslFavorite[]>>,
+    create: (
+      input: DslFavoriteInput
+    ): Promise<ApiResponse<DslFavorite>> =>
+      ipcRenderer.invoke(
+        IpcChannels.DslFavoriteCreate,
+        input
+      ) as Promise<ApiResponse<DslFavorite>>,
+    update: (
+      input: DslFavoriteInput
+    ): Promise<ApiResponse<DslFavorite>> =>
+      ipcRenderer.invoke(
+        IpcChannels.DslFavoriteUpdate,
+        input
+      ) as Promise<ApiResponse<DslFavorite>>,
+    delete: (id: string): Promise<ApiResponse<{ id: string }>> =>
+      ipcRenderer.invoke(
+        IpcChannels.DslFavoriteDelete,
+        id
+      ) as Promise<ApiResponse<{ id: string }>>
   }
 }
 

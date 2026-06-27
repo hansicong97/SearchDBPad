@@ -39,6 +39,8 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import {
   DeleteOutlined,
+  EyeInvisibleOutlined,
+  EyeOutlined,
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined
@@ -94,11 +96,17 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
   const fetchIndices = useWorkspaceStore((s) => s.fetchIndices)
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
   const deleteIndex = useWorkspaceStore((s) => s.deleteIndex)
+  // V0.3.1 A-1: per-row close / open lifecycle actions. Each holds
+  // its own loading flag so the other buttons on the same row keep
+  // responding while one operation is in flight.
+  const closeIndex = useWorkspaceStore((s) => s.closeIndex)
+  const openIndex = useWorkspaceStore((s) => s.openIndex)
   const selectIndex = useWorkspaceStore((s) => s.selectIndex)
 
   const [keyword, setKeyword] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [deletingName, setDeletingName] = useState<string | null>(null)
+  const [togglingName, setTogglingName] = useState<string | null>(null)
 
   const filtered = useMemo<EsIndexInfo[]>(() => {
     const q = keyword.trim().toLowerCase()
@@ -177,45 +185,122 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
     {
       title: '操作',
       key: 'actions',
-      width: 100,
+      width: 200,
       fixed: 'right',
-      render: (_v, record) => (
-        <Popconfirm
-          title={`确定删除索引 "${record.index}" ？`}
-          description="删除操作不可恢复，索引数据将永久丢失。"
-          okText="删除"
-          okButtonProps={{ danger: true }}
-          cancelText="取消"
-          onConfirm={async (e) => {
-            e?.stopPropagation()
-            if (!activeConnectionId) return
-            setDeletingName(record.index)
-            try {
-              const res = await deleteIndex({
-                connectionId: activeConnectionId,
-                index: record.index
-              })
-              if (res) {
-                message.success(`已删除索引 "${record.index}"`)
-              }
-            } finally {
-              setDeletingName(null)
-            }
-          }}
-          onCancel={(e) => e?.stopPropagation()}
-        >
-          <Button
-            type="text"
-            danger
-            size="small"
-            icon={<DeleteOutlined />}
-            loading={deletingName === record.index}
-            onClick={(e) => e.stopPropagation()}
-          >
-            删除
-          </Button>
-        </Popconfirm>
-      )
+      render: (_v, record) => {
+        const isOpen = record.status === 'open'
+        // V0.3.1 A-1: close is destructive-with-side-effects (the
+        // index stops accepting reads / writes until reopened), so
+        // we wrap it in a Popconfirm. Open is a low-risk restore
+        // and doesn't need one.
+        return (
+          <Space size={4} onClick={(e) => e.stopPropagation()}>
+            {isOpen ? (
+              <Popconfirm
+                title={`确定关闭索引 "${record.index}" ？`}
+                description="关闭后索引将无法读写，重新打开后才能继续使用。"
+                okText="关闭"
+                cancelText="取消"
+                onConfirm={async (e) => {
+                  e?.stopPropagation()
+                  if (!activeConnectionId) return
+                  setTogglingName(record.index)
+                  try {
+                    const res = await closeIndex({
+                      connectionId: activeConnectionId,
+                      index: record.index
+                    })
+                    if (res?.success) {
+                      message.success(`已关闭索引 "${record.index}"`)
+                    } else if (res) {
+                      message.error(
+                        `关闭索引失败：${res.error?.message ?? '未知错误'}`
+                      )
+                    }
+                  } finally {
+                    setTogglingName(null)
+                  }
+                }}
+                onCancel={(e) => e?.stopPropagation()}
+              >
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<EyeInvisibleOutlined />}
+                  loading={togglingName === record.index}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  关闭
+                </Button>
+              </Popconfirm>
+            ) : (
+              <Button
+                type="text"
+                size="small"
+                icon={<EyeOutlined />}
+                loading={togglingName === record.index}
+                onClick={async (e) => {
+                  e.stopPropagation()
+                  if (!activeConnectionId) return
+                  setTogglingName(record.index)
+                  try {
+                    const res = await openIndex({
+                      connectionId: activeConnectionId,
+                      index: record.index
+                    })
+                    if (res?.success) {
+                      message.success(`已打开索引 "${record.index}"`)
+                    } else if (res) {
+                      message.error(
+                        `打开索引失败：${res.error?.message ?? '未知错误'}`
+                      )
+                    }
+                  } finally {
+                    setTogglingName(null)
+                  }
+                }}
+              >
+                打开
+              </Button>
+            )}
+            <Popconfirm
+              title={`确定删除索引 "${record.index}" ？`}
+              description="删除操作不可恢复，索引数据将永久丢失。"
+              okText="删除"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={async (e) => {
+                e?.stopPropagation()
+                if (!activeConnectionId) return
+                setDeletingName(record.index)
+                try {
+                  const res = await deleteIndex({
+                    connectionId: activeConnectionId,
+                    index: record.index
+                  })
+                  if (res) {
+                    message.success(`已删除索引 "${record.index}"`)
+                  }
+                } finally {
+                  setDeletingName(null)
+                }
+              }}
+              onCancel={(e) => e?.stopPropagation()}
+            >
+              <Button
+                type="text"
+                danger
+                size="small"
+                icon={<DeleteOutlined />}
+                loading={deletingName === record.index}
+                onClick={(e) => e.stopPropagation()}
+              >
+                删除
+              </Button>
+            </Popconfirm>
+          </Space>
+        )
+      }
     }
   ]
 

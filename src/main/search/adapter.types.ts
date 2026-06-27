@@ -21,6 +21,8 @@
  */
 
 import type {
+  AliasListResult,
+  AliasModifyResult,
   ClusterHealth,
   ClusterInfo,
   ConnectionTestResult,
@@ -35,7 +37,12 @@ import type {
   ImportMode,
   IndexCreateRequest,
   IndexCreateResult,
-  IndexDeleteResult
+  IndexDeleteResult,
+  IndexTemplateGetResult,
+  IndexTemplateListResult,
+  IndexTemplateModifyResult,
+  ShardInfo,
+  ShardRerouteResult
 } from '../../shared/ipc'
 import type {
   SearchConnection,
@@ -103,6 +110,13 @@ export interface ImportInput {
   index: string
   rows: ImportRow[]
   mode: ImportMode
+  /** V0.3.7 B-3: optional batch-level progress callback. The
+   *  adapter invokes this after each `_bulk` batch with the
+   *  cumulative success / failed counts. The service layer wraps
+   *  this in a `jobId`-tagged `ImportProgress` event for the
+   *  renderer. Adapters that do not support progress reporting
+   *  may safely ignore this field. */
+  onBatchProgress?: (info: { success: number; failed: number }) => void
 }
 
 export interface ExportInput {
@@ -208,6 +222,88 @@ export interface SearchEngineAdapter {
     indexName: string
   ): Promise<DeleteIndexResult>
 
+  /** V0.3.1 A-1: close an open index so it stops accepting reads
+   *  / writes but keeps its data on disk. Returns an ack-shape result
+   *  that mirrors `DeleteIndexResult` so callers can reuse error
+   *  reporting. Adapters that don't support close should throw
+   *  `SearchEngineError('unsupported_capability')`. */
+  closeIndex(
+    connection: SearchConnection,
+    indexName: string
+  ): Promise<DeleteIndexResult>
+
+  /** V0.3.1 A-1: re-open a previously closed index. Same error
+   *  contract as `closeIndex`. */
+  openIndex(
+    connection: SearchConnection,
+    indexName: string
+  ): Promise<DeleteIndexResult>
+
+  /** V0.3.2 A-2: update the live settings of an index via
+   *  `PUT /{index}/_settings`. The `settings` object is forwarded
+   *  as-is — typically `{ index: { refresh_interval, ... } }`.
+   *  Engines reject static settings (e.g. `number_of_shards`); the
+   *  error message should be surfaced to the caller verbatim so the
+   *  UI can show it without re-parsing. */
+  updateIndexSettings(
+    connection: SearchConnection,
+    indexName: string,
+    settings: Record<string, unknown>
+  ): Promise<DeleteIndexResult>
+
+  /** V0.3.3 A-3: append fields to an existing index mapping via
+   *  `PUT /{index}/_mapping`. The `mapping` object is forwarded as
+   *  the request body — typically `{ properties: { ... } }`. The
+   *  adapter is responsible for ES 6.x `_doc` wrapping if needed
+   *  (see `versionCompat.ts`).
+   *  Elasticsearch rejects any attempt to change the type of an
+   *  existing field; the renderer surfaces that error verbatim. */
+  updateIndexMapping(
+    connection: SearchConnection,
+    indexName: string,
+    mapping: Record<string, unknown>
+  ): Promise<DeleteIndexResult>
+
+  /* ----------- V0.3.4 A-4: alias management ----------- */
+
+  listAliases(connection: SearchConnection): Promise<AliasListResult>
+
+  addAlias(
+    connection: SearchConnection,
+    indexName: string,
+    aliasName: string
+  ): Promise<AliasModifyResult>
+
+  deleteAlias(
+    connection: SearchConnection,
+    indexName: string,
+    aliasName: string
+  ): Promise<AliasModifyResult>
+
+  /* ----------- V0.3.4 A-5: index templates ----------- */
+
+  listIndexTemplates(
+    connection: SearchConnection
+  ): Promise<IndexTemplateListResult>
+
+  getIndexTemplate(
+    connection: SearchConnection,
+    name: string
+  ): Promise<IndexTemplateGetResult>
+
+  createIndexTemplate(
+    connection: SearchConnection,
+    name: string,
+    template: Record<string, unknown>,
+    legacy?: boolean
+  ): Promise<IndexTemplateModifyResult>
+
+  deleteIndexTemplate(
+    connection: SearchConnection,
+    name: string,
+    legacy?: boolean
+  ): Promise<IndexTemplateModifyResult>
+
   importDocuments(
     connection: SearchConnection,
     input: ImportInput
@@ -217,4 +313,38 @@ export interface SearchEngineAdapter {
     connection: SearchConnection,
     input: ExportInput
   ): Promise<ExportResult>
+
+  /* ----------- V0.3.9 E-7: shard management ----------- */
+
+  /** Read the shard table for a single index. Returns one row per
+   *  shard (primary + each replica). Pure read; safe to call on
+   *  every refresh. */
+  listIndexShards(
+    connection: SearchConnection,
+    indexName: string
+  ): Promise<ShardInfo[]>
+
+  /** Relocate a started shard from `fromNode` to `toNode` via
+   *  `POST /_cluster/reroute` with a `move` command. ES rejects
+   *  unknown node names with a 400 — the service layer surfaces
+   *  that verbatim. */
+  relocateShard(
+    connection: SearchConnection,
+    indexName: string,
+    shard: string,
+    fromNode: string,
+    toNode: string
+  ): Promise<ShardRerouteResult>
+
+  /** Cancel the allocation of an unassigned shard via
+   *  `POST /_cluster/reroute` with a `cancel` command. `allowPrimary`
+   *  is forwarded to ES' `allow_primary` flag; defaults to false to
+   *  match ES' own default. */
+  cancelShardAllocation(
+    connection: SearchConnection,
+    indexName: string,
+    shard: string,
+    node: string,
+    allowPrimary?: boolean
+  ): Promise<ShardRerouteResult>
 }

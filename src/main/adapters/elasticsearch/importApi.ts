@@ -145,6 +145,12 @@ export async function importDocuments(
         success++
       }
     }
+
+    // V0.3.7 B-3: surface batch-level progress to the service
+    // layer so it can wrap the counts into a jobId-tagged event
+    // for the renderer. The callback is optional — adapters that
+    // do not opt in simply skip this notification.
+    input.onBatchProgress?.({ success, failed })
   }
 
   // Best-effort refresh so the next UI search sees the new docs.

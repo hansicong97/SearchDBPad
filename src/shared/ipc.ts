@@ -52,6 +52,32 @@ export const IpcChannels = {
   /* Index management (phase 13 version update) */
   IndexCreate: 'index:create',
   IndexDelete: 'index:delete',
+  IndexClose: 'index:close',
+  IndexOpen: 'index:open',
+  IndexUpdateSettings: 'index:updateSettings',
+  IndexUpdateMapping: 'index:updateMapping',
+
+  /* Alias management (V0.3.4 A-4) */
+  AliasList: 'alias:list',
+  AliasAdd: 'alias:add',
+  AliasDelete: 'alias:delete',
+
+  /* Shard management (V0.3.9 E-7) */
+  ShardList: 'shard:list',
+  ShardRelocate: 'shard:relocate',
+  ShardCancelAllocation: 'shard:cancelAllocation',
+
+  /* Index templates (V0.3.4 A-5) */
+  IndexTemplateList: 'index-template:list',
+  IndexTemplateGet: 'index-template:get',
+  IndexTemplateCreate: 'index-template:create',
+  IndexTemplateDelete: 'index-template:delete',
+
+  /* DSL favorites (V0.3.5 B-4) */
+  DslFavoriteList: 'dsl-favorite:list',
+  DslFavoriteCreate: 'dsl-favorite:create',
+  DslFavoriteUpdate: 'dsl-favorite:update',
+  DslFavoriteDelete: 'dsl-favorite:delete',
 
   /* Document search (phase 5) */
   DocumentSearch: 'document:search',
@@ -69,6 +95,13 @@ export const IpcChannels = {
   ImportPickFile: 'import:pickFile',
   ImportPreview: 'import:preview',
   ImportExecute: 'import:execute',
+
+  /* V0.3.7 B-3: long-running job progress events. The main process
+   * uses `webContents.send` (not `ipcMain.handle`) to push these;
+   * the renderer subscribes through `importDocs.onProgress` /
+   * `exportDocs.onProgress`. */
+  ImportProgressEvent: 'import:progress',
+  ExportProgressEvent: 'export:progress',
 
   /* Search engine metadata (V0.3.0 §10.2) */
   SearchEngineDetect: 'search-engine:detect'
@@ -113,10 +146,18 @@ export interface EsConnectionInput {
   folderId?: string | null
 }
 
-/** A user-defined folder for grouping connections in the sidebar. */
+/** A user-defined folder for grouping connections in the sidebar.
+ *  V0.3.9 E-4: folders may nest via `parentId`. `null` / `undefined`
+ *  means top-level; any other value points at another folder's id.
+ *  The renderer is responsible for refusing to set `parentId` to
+ *  the folder's own id or any of its descendants (cycle check). */
 export interface ConnectionFolder {
   id: string
   name: string
+  /** V0.3.9 E-4: parent folder id for nesting. `null` / `undefined`
+   *  means top-level. Older persisted folders without this field are
+   *  backfilled to `null` on read. */
+  parentId?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -125,6 +166,10 @@ export interface ConnectionFolder {
 export interface ConnectionFolderInput {
   id?: string
   name: string
+  /** V0.3.9 E-4: optional parent folder id when creating a nested
+   *  folder. Ignored on update to avoid silently moving folders —
+   *  use the dedicated move API if/when it lands. */
+  parentId?: string | null
 }
 
 /** Result of a `connection:test` call. */
@@ -242,6 +287,162 @@ export interface IndexDeleteResult {
   acknowledged: boolean
 }
 
+/* ------------------- Index lifecycle (V0.3.1 A-1) ------------------- */
+
+/** Payload for `index:close` and `index:open`. Shares the
+ *  `IndexDeleteRequest` shape — only the connection + target
+ *  index are needed. */
+export interface IndexLifecycleRequest {
+  connectionId: string
+  index: string
+}
+
+/** Ack-shaped result for `index:close` / `index:open`. Reuses the
+ *  same fields as `IndexDeleteResult` so callers can use a single
+ *  renderer-side branch for non-create index operations. */
+export interface IndexLifecycleResult {
+  connectionId: string
+  index: string
+  acknowledged: boolean
+}
+
+/* ------------------- Index settings update (V0.3.2 A-2) ------------------- */
+
+/** Payload for `index:updateSettings`. `settings` is the raw object
+ *  forwarded to `PUT /{index}/_settings` — typically `{
+ *  index: { refresh_interval, number_of_replicas, ... } }`.
+ *  Static settings (e.g. `number_of_shards`) will be rejected by
+ *  Elasticsearch and surfaced as a server-side error. */
+export interface IndexUpdateSettingsRequest {
+  connectionId: string
+  index: string
+  settings: Record<string, unknown>
+}
+
+/** Ack-shaped result for `index:updateSettings`. */
+export interface IndexUpdateSettingsResult {
+  connectionId: string
+  index: string
+  acknowledged: boolean
+}
+
+/* ------------------- Index mapping update (V0.3.3 A-3) ------------------- */
+
+/** Payload for `index:updateMapping`. Only field additions are
+ *  supported in V0.3.3 — Elasticsearch rejects attempts to change
+ *  the type of an existing field with `illegal_argument_exception`,
+ *  which the renderer surfaces verbatim.
+ *
+ *  `mapping` is forwarded as the body of `PUT /{index}/_mapping`.
+ *  For ES 6.x targets the adapter automatically wraps the body
+ *  under `_doc` (see `versionCompat.ts`). */
+export interface IndexUpdateMappingRequest {
+  connectionId: string
+  index: string
+  mapping: Record<string, unknown>
+}
+
+/** Ack-shaped result for `index:updateMapping`. */
+export interface IndexUpdateMappingResult {
+  connectionId: string
+  index: string
+  acknowledged: boolean
+}
+
+/* ------------------- Alias management (V0.3.4 A-4) ------------------- */
+
+/** A single alias attached to an index. The `index` field lets the
+ *  renderer group by target when the payload comes from
+ *  `GET /_alias` (which keys the response by index name). */
+export interface EsAliasInfo {
+  /** The alias name, e.g. "logs-current". */
+  alias: string
+  /** The concrete index this alias currently points at. */
+  index: string
+}
+
+/** Result of `alias:list`. The renderer groups by `index` for the
+ *  per-index tab view and flattens for any cross-index list. */
+export interface AliasListResult {
+  connectionId: string
+  aliases: EsAliasInfo[]
+}
+
+/** Payload for `alias:add` and `alias:delete`. */
+export interface AliasModifyRequest {
+  connectionId: string
+  index: string
+  alias: string
+}
+
+export interface AliasModifyResult {
+  connectionId: string
+  index: string
+  alias: string
+  acknowledged: boolean
+}
+
+/* ------------------- Index templates (V0.3.4 A-5) ------------------- */
+
+/** A single template row. `legacy` distinguishes the ES ≤ 7.7
+ *  `/ _template` path from the ES 7.8+ `/_index_template` path so
+ *  the renderer can label them accurately. */
+export interface EsIndexTemplateInfo {
+  name: string
+  legacy: boolean
+}
+
+/** Result of `index-template:list`. */
+export interface IndexTemplateListResult {
+  connectionId: string
+  templates: EsIndexTemplateInfo[]
+}
+
+/** Payload for `index-template:get`. */
+export interface IndexTemplateGetRequest {
+  connectionId: string
+  name: string
+}
+
+/** Body of a single template. Returned by `index-template:get` as
+ *  the raw object the engine stores; passed to
+ *  `index-template:create` as the body the engine should accept.
+ *  We expose it as `Record<string, unknown>` because the shape
+ *  diverges between legacy (`{ index_patterns, settings, mappings }`)
+ *  and composable (`{ index_patterns, template: { settings, mappings } }`). */
+export interface IndexTemplateGetResult {
+  connectionId: string
+  name: string
+  legacy: boolean
+  template: Record<string, unknown>
+}
+
+/** Payload for `index-template:create`. */
+export interface IndexTemplateCreateRequest {
+  connectionId: string
+  name: string
+  /** If omitted, the adapter decides legacy vs composable based on
+   *  the cached server version. The renderer can override for
+   *  advanced use cases. */
+  legacy?: boolean
+  template: Record<string, unknown>
+}
+
+export interface IndexTemplateModifyResult {
+  connectionId: string
+  name: string
+  acknowledged: boolean
+}
+
+/** Payload for `index-template:delete`. */
+export interface IndexTemplateDeleteRequest {
+  connectionId: string
+  name: string
+  /** If omitted, the adapter tries both endpoints and lets the
+   *  server pick. */
+  legacy?: boolean
+}
+
 /* ------------------- Document search types (phase 5) ------------------- */
 
 /** Payload for `document:search`. The `query` body is forwarded verbatim
@@ -346,6 +547,11 @@ export const MAX_EXPORT_ROWS = 10000
 
 /** Result of `export:execute`. */
 export interface ExportResult {
+  /** V0.3.7 B-3: job id used to correlate the result with the
+   *  progress events the main process pushed while the export
+   *  was running. The renderer uses it to drop late events that
+   *  arrive after the user already started a new job. */
+  jobId: string
   connectionId: string
   index: string
   format: ExportFormat
@@ -453,6 +659,10 @@ export interface ImportFailure {
 }
 
 export interface ImportExecuteResult {
+  /** V0.3.7 B-3: job id used to correlate the result with the
+   *  progress events the main process pushed while the import
+   *  was running. */
+  jobId: string
   connectionId: string
   index: string
   format: ImportFormat
@@ -461,6 +671,163 @@ export interface ImportExecuteResult {
   failed: number
   /** First N failures (capped server-side at e.g. 20). */
   failures: ImportFailure[]
+}
+
+/* ------------------- Job progress (V0.3.7 B-3) ------------------- */
+
+/** Coarse stage a long-running import job is currently in. The
+ *  renderer uses these for the human-readable label and the icon
+ *  shown next to the progress bar. */
+export type ImportStage =
+  | 'reading' /* reading the source file from disk */
+  | 'parsing' /* parsing rows out of the file (JSON / NDJSON / CSV) */
+  | 'clearing' /* `_delete_by_query` (replace mode only) */
+  | 'writing' /* `POST /_bulk` batches */
+  | 'completed' /* job finished successfully */
+  | 'failed' /* job aborted with an error */
+
+/** A single progress update for an import job. Pushed from the
+ *  main process to the renderer over the `import:progress` channel.
+ *  The renderer filters by `jobId` so out-of-order or stale events
+ *  from a previous job are dropped.
+ *
+ *  Field invariants:
+ *   - `stage` is the current stage; `completed` / `failed` carry a
+ *     final `message`.
+ *   - `percent` is 0..100 once `total` is known, `null` otherwise
+ *     (e.g. during `reading` we don't yet know how many rows the
+ *     file contains).
+ *   - `total` is null until parsing finishes; for `writing` it is
+ *     the row count the parser produced.
+ *   - `processed` mirrors `total` once writing finishes a batch.
+ *   - `success` / `failed` are cumulative counters across batches. */
+export interface ImportProgress {
+  jobId: string
+  stage: ImportStage
+  percent: number | null
+  total: number | null
+  processed: number | null
+  success: number
+  failed: number
+  /** Only set on `completed` / `failed`. */
+  message?: string
+}
+
+export type ExportStage =
+  | 'querying' /* `POST /{index}/_search` to fetch hits */
+  | 'writing' /* serialize + write to disk */
+  | 'completed'
+  | 'failed'
+
+/** A single progress update for an export job. Pushed from the main
+ *  process to the renderer over the `export:progress` channel.
+ *  Same jobId-scoped filtering rules as `ImportProgress`. */
+export interface ExportProgress {
+  jobId: string
+  stage: ExportStage
+  percent: number | null
+  /** Docs fetched so far. null until querying finishes. */
+  total: number | null
+  /** Bytes written so far. null until writing starts. */
+  bytes: number | null
+  message?: string
+}
+
+/* ------------------- DSL favorites (V0.3.5 B-4) ------------------- */
+
+/** A persisted favorite DSL query. `dsl` is stored as a raw JSON
+ *  string so the renderer can re-parse it with the same formatting
+ *  the user originally typed; we don't try to canonicalize the
+ *  object. `indexName` is a free-form label — the favorite itself
+ *  is global and can be applied to any index the user picks at
+ *  load time. An empty string means "no specific index". */
+export interface DslFavorite {
+  id: string
+  name: string
+  indexName: string
+  dsl: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** Payload for `dsl-favorite:create` and `dsl-favorite:update`.
+ *  `id` is required for update, omitted for create. The service
+ *  layer validates `name` and the JSON content of `dsl` — invalid
+ *  input surfaces as a 4xx-shaped error envelope rather than a
+ *  half-written record. */
+export interface DslFavoriteInput {
+  id?: string
+  name: string
+  indexName: string
+  dsl: string
+}
+
+/* ------------------- Shard management types (V0.3.9 E-7) ------------------- */
+
+/** Single shard row from `GET /_cat/shards/{index}?format=json&bytes=b`.
+ *  Field names mirror what `_cat/shards` reports — they are taken
+ *  verbatim so the renderer can label columns the same way ES does. */
+export interface ShardInfo {
+  /** Shard index (0-based). */
+  shard: string
+  /** Either "p" for primary or "r" for replica. */
+  prirep: 'p' | 'r' | string
+  /** Current shard state, e.g. STARTED / UNASSIGNED / RELOCATING /
+   *  INITIALIZING. Other values are passed through unchanged. */
+  state: string
+  /** Number of docs in the shard. */
+  docs: string
+  /** Store size of the shard, as a human-readable string from ES. */
+  store: string
+  /** IP of the node that hosts the shard; empty when UNASSIGNED. */
+  ip: string
+  /** Node name (or empty when UNASSIGNED). */
+  node: string
+  /** Unassigned reason for UNASSIGNED shards, otherwise empty. */
+  unassignedReason?: string
+  /** Current allocation id (newer ES versions only). */
+  completionPercent?: string
+}
+
+export interface ShardListResult {
+  connectionId: string
+  index: string
+  shards: ShardInfo[]
+}
+
+/** Payload for `shard:relocate`. Uses a `move` reroute command —
+ *  `fromNode` and `toNode` are required; `index` + `shard` identify
+ *  the shard being moved. The renderer is expected to fill in all
+ *  four fields. */
+export interface ShardRelocateRequest {
+  connectionId: string
+  index: string
+  shard: string
+  fromNode: string
+  toNode: string
+}
+
+/** Payload for `shard:cancelAllocation`. Uses a `cancel` reroute
+ *  command on a shard that is currently unassigned (replica that
+ *  has not been allocated yet). */
+export interface ShardCancelRequest {
+  connectionId: string
+  index: string
+  shard: string
+  node: string
+  /** When `true`, allow the primary shard to be cancelled (cancels
+   *  the primary shard from being allocated in case of a
+   *  reassignment). Defaults to false to match ES' default. */
+  allowPrimary?: boolean
+}
+
+/** Result of `shard:relocate` and `shard:cancelAllocation`. ES
+ *  always returns `acknowledged: true` on a successful reroute. */
+export interface ShardRerouteResult {
+  connectionId: string
+  index: string
+  shard: string
+  acknowledged: boolean
 }
 
 /* ------------------- Generic response envelope ------------------- */

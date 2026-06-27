@@ -24,8 +24,23 @@ import {
   getIndexMapping,
   getIndexSettings,
   createIndex,
-  deleteIndex
+  deleteIndex,
+  closeIndex,
+  openIndex,
+  updateIndexSettings,
+  updateIndexMapping
 } from './indexApi'
+import {
+  listAliases,
+  addAlias,
+  deleteAlias
+} from './aliasApi'
+import {
+  listIndexTemplates,
+  getIndexTemplate,
+  createIndexTemplate,
+  deleteIndexTemplate
+} from './templateApi'
 import {
   searchDocuments,
   createDocument,
@@ -34,6 +49,11 @@ import {
 } from './documentApi'
 import { importDocuments } from './importApi'
 import { exportDocuments } from './exportApi'
+import {
+  listIndexShards,
+  relocateShard,
+  cancelShardAllocation
+} from './shardApi'
 
 export const elasticsearchAdapter: SearchEngineAdapter = {
   type: 'elasticsearch',
@@ -55,7 +75,25 @@ export const elasticsearchAdapter: SearchEngineAdapter = {
 
   createIndex,
   deleteIndex,
+  closeIndex,
+  openIndex,
+  updateIndexSettings,
+  updateIndexMapping,
+
+  listAliases,
+  addAlias,
+  deleteAlias,
+
+  listIndexTemplates,
+  getIndexTemplate,
+  createIndexTemplate,
+  deleteIndexTemplate,
 
   importDocuments,
-  exportDocuments
+  exportDocuments,
+
+  // V0.3.9 E-7: shard management.
+  listIndexShards,
+  relocateShard,
+  cancelShardAllocation
 }

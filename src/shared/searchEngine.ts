@@ -73,12 +73,25 @@ export interface SearchEngineServerInfo {
  *  pre-existing `EsIndexInfo` (which carries `docsDeleted`, `uuid`,
  *  numeric `storeSize` and an `index` field instead of `name`).
  *  Step 4's service refactor is responsible for the mapping between
- *  them. */
+ *  them.
+ *
+ *  V0.3.1 C-2: `docsDeleted` and `uuid` are restored on the adapter
+ *  shape so engines that report them (Elasticsearch) flow the real
+ *  values through without lossy fallbacks. Other adapters may leave
+ *  them undefined. */
 export interface SearchIndexInfo {
   name: string
   health?: string
   status?: string
   docsCount?: number
+  /** Number of deleted documents, as reported by engines that track
+   *  tombstones (Elasticsearch). Optional because not every engine
+   *  exposes this metric. */
+  docsDeleted?: number
+  /** Engine-native identifier for the index instance. For
+   *  Elasticsearch this is the value of the `uuid` column from
+   *  `/_cat/indices`. Optional because not every engine emits one. */
+  uuid?: string
   storeSize?: string
   pri?: number
   rep?: number

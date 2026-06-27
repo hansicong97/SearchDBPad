@@ -1,9 +1,9 @@
 /**
- * Workspace page (phase 3 + 4 + 5 + layout fix in 13).
+ * Workspace page (phase 3 + 4 + 5 + layout fix in 13 + V0.3.4 A-5).
  *
  * Shown in the main content area when a connection is active in the
  * sidebar. Displays:
- *  - the active connection name + refresh
+ *  - the active connection name + refresh + template entry
  *  - cluster info card
  *  - either the index list (default) or the index detail panel
  *    (when an index row has been clicked)
@@ -16,14 +16,19 @@
  *       - The detail / index list fills the remaining height and
  *         scrolls INDEPENDENTLY of the page (the page itself is
  *         overflow:hidden so it never scrolls).
+ *
+ * V0.3.4 A-5: a 「索引模板」 button in the workspace header opens
+ * the TemplatePanel modal (connection-scoped, so it doesn't depend
+ * on the index-detail view being visible).
  */
 
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { App as AntdApp, Button, Card, Empty, Space, Tag, Typography } from 'antd'
-import { ReloadOutlined } from '@ant-design/icons'
+import { ReloadOutlined, SnippetsOutlined } from '@ant-design/icons'
 import ClusterInfoCard from '../components/ClusterInfoCard'
 import IndexDetailPanel from '../components/IndexDetailPanel'
 import IndexList from '../components/IndexList'
+import TemplatePanel from '../components/TemplatePanel'
 import { useConnectionStore } from '../stores/connection.store'
 import { useWorkspaceStore } from '../stores/workspace.store'
 
@@ -46,8 +51,8 @@ export default function WorkspacePage(): JSX.Element {
   const settingsLoading = useWorkspaceStore((s) => s.settingsLoading)
   const documentError = useWorkspaceStore((s) => s.documentError)
   const documentLoading = useWorkspaceStore((s) => s.documentLoading)
-  const dslError = useWorkspaceStore((s) => s.dslError)
-  const dslLoading = useWorkspaceStore((s) => s.dslLoading)
+  // V0.3.6 B-2: DSL errors are now per-tab and surfaced inline
+  // inside DslQueryPanel; no global toast needed.
   const simpleError = useWorkspaceStore((s) => s.simpleError)
   const simpleLoading = useWorkspaceStore((s) => s.simpleLoading)
 
@@ -55,6 +60,9 @@ export default function WorkspacePage(): JSX.Element {
   const serverInfo = useWorkspaceStore((s) => s.serverInfo)
   const serverInfoError = useWorkspaceStore((s) => s.serverInfoError)
   const serverInfoLoading = useWorkspaceStore((s) => s.serverInfoLoading)
+
+  // V0.3.4 A-5: template panel visibility.
+  const [templateOpen, setTemplateOpen] = useState(false)
 
   const connections = useConnectionStore((s) => s.connections)
   const activeConnection = connections.find((c) => c.id === activeId) ?? null
@@ -76,9 +84,6 @@ export default function WorkspacePage(): JSX.Element {
   useEffect(() => {
     if (documentError && !documentLoading) message.error(documentError)
   }, [documentError, documentLoading, message])
-  useEffect(() => {
-    if (dslError && !dslLoading) message.error(dslError)
-  }, [dslError, dslLoading, message])
   useEffect(() => {
     if (simpleError && !simpleLoading) message.error(simpleError)
   }, [simpleError, simpleLoading, message])
@@ -173,13 +178,21 @@ export default function WorkspacePage(): JSX.Element {
         </Space>
       }
       extra={
-        <Button
-          icon={<ReloadOutlined />}
-          onClick={() => void refreshAll()}
-          loading={refreshing}
-        >
-          刷新
-        </Button>
+        <Space>
+          <Button
+            icon={<SnippetsOutlined />}
+            onClick={() => setTemplateOpen(true)}
+          >
+            索引模板
+          </Button>
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={() => void refreshAll()}
+            loading={refreshing}
+          >
+            刷新
+          </Button>
+        </Space>
       }
       styles={{
         body: {
@@ -224,6 +237,11 @@ export default function WorkspacePage(): JSX.Element {
           <IndexList onSelect={handleSelectIndex} />
         )}
       </div>
+
+      <TemplatePanel
+        open={templateOpen}
+        onClose={() => setTemplateOpen(false)}
+      />
     </Card>
   )
 }

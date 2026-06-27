@@ -11,7 +11,7 @@
  * `ai-dev-steps/08_EXPORT.md` — scroll / search_after is out of scope).
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Alert,
   App as AntdApp,
@@ -19,14 +19,21 @@ import {
   Card,
   Form,
   InputNumber,
+  Progress,
   Radio,
   Space,
+  Tag,
   Typography
 } from 'antd'
-import { DownloadOutlined } from '@ant-design/icons'
+import {
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  DownloadOutlined,
+  LoadingOutlined
+} from '@ant-design/icons'
 import { useWorkspaceStore } from '../stores/workspace.store'
 import { MAX_EXPORT_ROWS } from '@shared/ipc'
-import type { ExportFormat } from '@shared/ipc'
+import type { ExportFormat, ExportProgress, ExportStage } from '@shared/ipc'
 
 const { Text, Paragraph } = Typography
 
@@ -69,6 +76,19 @@ export default function ExportPanel(): JSX.Element {
     bytes: number
   } | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  // V0.3.7 B-3: live progress for the current export job. Reset
+  // on every new run; the panel subscribes once on mount and
+  // lets main push events matching the current jobId (the
+  // jobId is also returned in the result envelope so we can
+  // drop stale late events).
+  const [progress, setProgress] = useState<ExportProgress | null>(null)
+
+  useEffect(() => {
+    const unsubscribe = window.esApi.exportDocs.onProgress((p) => {
+      setProgress(p)
+    })
+    return unsubscribe
+  }, [])
 
   const ready = !!activeConnectionId && !!selectedIndex
 
@@ -76,6 +96,10 @@ export default function ExportPanel(): JSX.Element {
     if (!ready) return
     setErrorMsg(null)
     setLastResult(null)
+    // V0.3.7 B-3: drop any leftover progress before kicking off
+    // a new export so the bar doesn't briefly show numbers from
+    // a previous run.
+    setProgress(null)
     setExporting(true)
     try {
       const pickRes = await window.esApi.exportDocs.pickSavePath({
@@ -98,6 +122,8 @@ export default function ExportPanel(): JSX.Element {
         maxRows
       })
       if (!execRes.success || !execRes.data) {
+        // Keep the most recent `failed` event visible — main
+        // writes the human-readable cause there.
         setErrorMsg(execRes.error?.message ?? '导出失败')
         return
       }
@@ -113,6 +139,29 @@ export default function ExportPanel(): JSX.Element {
       setExporting(false)
     }
   }
+
+  // V0.3.7 B-3: same human-readable labels as the import side
+  // so the two progress cards read consistently.
+  const STAGE_LABEL: Record<ExportStage, string> = {
+    querying: '查询文档中',
+    writing: '写入文件中',
+    completed: '已完成',
+    failed: '失败'
+  }
+  const showProgress =
+    !!progress &&
+    (exporting ||
+      progress.stage === 'completed' ||
+      progress.stage === 'failed')
+  const progressPercent = progress?.percent ?? 0
+  const progressStatus: 'normal' | 'success' | 'exception' | 'active' =
+    progress?.stage === 'completed'
+      ? 'success'
+      : progress?.stage === 'failed'
+        ? 'exception'
+        : progress && progress.percent !== null
+          ? 'active'
+          : 'normal'
 
   return (
     <div style={{ maxWidth: 720 }}>
@@ -204,6 +253,60 @@ export default function ExportPanel(): JSX.Element {
           description={errorMsg}
           style={{ marginTop: 16 }}
         />
+      ) : null}
+
+      {/* V0.3.7 B-3: live progress card. Sits between the error
+          alert and the final success card so the user sees the
+          run progress first, then the completed outcome. */}
+      {showProgress && progress ? (
+        <Card
+          size="small"
+          style={{ marginTop: 16 }}
+          title={
+            <Space>
+              {progress.stage === 'completed' ? (
+                <CheckCircleOutlined style={{ color: '#52c41a' }} />
+              ) : progress.stage === 'failed' ? (
+                <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+              ) : (
+                <LoadingOutlined />
+              )}
+              <Text>导出进度</Text>
+              <Tag color="blue">{STAGE_LABEL[progress.stage]}</Tag>
+            </Space>
+          }
+        >
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Progress
+              percent={progressPercent}
+              status={progressStatus}
+              showInfo
+            />
+            <Space size="large" wrap>
+              {progress.total !== null ? (
+                <Text>
+                  已查询{' '}
+                  <Text strong>{progress.total.toLocaleString('en-US')}</Text>{' '}
+                  条
+                </Text>
+              ) : null}
+              {progress.bytes !== null ? (
+                <Text>
+                  已写入{' '}
+                  <Text strong>
+                    {(progress.bytes / 1024).toFixed(1)}
+                  </Text>{' '}
+                  KB
+                </Text>
+              ) : null}
+            </Space>
+            {progress.message ? (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {progress.message}
+              </Text>
+            ) : null}
+          </Space>
+        </Card>
       ) : null}
 
       {lastResult ? (

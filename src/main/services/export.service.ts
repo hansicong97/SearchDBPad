@@ -9,7 +9,9 @@
 
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { resolveAdapterByConnectionId } from './searchEngine.service'
+import { sendExportProgress } from './jobProgress'
 import type {
   ApiResponse,
   DocumentHit,
@@ -131,13 +133,45 @@ export async function runExport(
   }
   const maxRows = Math.min(Math.floor(requested), MAX_EXPORT_ROWS)
 
+  // V0.3.7 B-3: emit progress through the lifecycle. We always
+  // fire a terminal `completed` or `failed` event so the renderer
+  // can close its loading state even when an early validation
+  // fails. The renderer correlates by `jobId`.
+  const jobId = randomUUID()
+  const emit = (
+    stage: 'querying' | 'writing' | 'completed' | 'failed',
+    patch: {
+      percent?: number | null
+      total?: number | null
+      bytes?: number | null
+      message?: string
+    }
+  ): void => {
+    sendExportProgress({
+      jobId,
+      stage,
+      percent: patch.percent ?? null,
+      total: patch.total ?? null,
+      bytes: patch.bytes ?? null,
+      message: patch.message
+    })
+  }
+
   try {
+    emit('querying', { percent: null, total: null, bytes: null })
+
     const { connection, adapter } = await resolveAdapterByConnectionId(
       connectionId
     )
 
     const adapterInput: ExportInput = { index, maxRows, query }
     const result = await adapter.exportDocuments(connection, adapterInput)
+
+    emit('writing', {
+      percent: 50,
+      total: result.hits.length,
+      bytes: 0
+    })
 
     let payload = formatHits(result.hits, format, index)
     // CSV only: prepend UTF-8 BOM so Excel auto-detects encoding and
@@ -152,9 +186,17 @@ export async function runExport(
     await fs.writeFile(outputPath, payload, 'utf8')
     const stat = await fs.stat(outputPath)
 
+    emit('completed', {
+      percent: 100,
+      total: result.hits.length,
+      bytes: stat.size,
+      message: `已导出 ${result.hits.length} 条 (${(stat.size / 1024).toFixed(1)} KB)`
+    })
+
     return {
       success: true,
       data: {
+        jobId,
         connectionId,
         index,
         format,
@@ -164,9 +206,16 @@ export async function runExport(
       }
     }
   } catch (err) {
+    const message = describeExportError(err, index)
+    emit('failed', {
+      percent: null,
+      total: null,
+      bytes: null,
+      message
+    })
     return {
       success: false,
-      error: { message: describeExportError(err, index) }
+      error: { message }
     }
   }
 }

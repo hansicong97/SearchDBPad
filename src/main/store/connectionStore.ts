@@ -43,6 +43,19 @@ function ensureEngineType(c: PersistedConnection): EsConnection {
   return { ...c, engineType: 'elasticsearch' }
 }
 
+/** V0.3.9 E-4: legacy folders persisted before `parentId` existed
+ *  are backfilled to top-level (`parentId: null`). Same shape as
+ *  the engineType backfill — read-only normalization, written back
+ *  only when the user edits the folder. */
+function ensureFolderParent(
+  f: ConnectionFolder | (Omit<ConnectionFolder, 'parentId'> & { parentId?: string | null })
+): ConnectionFolder {
+  if (Object.prototype.hasOwnProperty.call(f, 'parentId')) {
+    return f as ConnectionFolder
+  }
+  return { ...f, parentId: null }
+}
+
 /* ---------------------- Connections ---------------------- */
 
 /** Return all persisted connections, newest first. Entries missing the
@@ -63,10 +76,15 @@ export function saveConnections(list: EsConnection[]): void {
 /* ---------------------- Folders ---------------------- */
 
 /** Return all persisted folders, oldest first so the UI keeps a stable
- *  ordering of user-defined groups. */
+ *  ordering of user-defined groups. V0.3.9 E-4: legacy entries without
+ *  `parentId` are backfilled to top-level. */
 export function loadConnectionFolders(): ConnectionFolder[] {
-  const list = store.get('folders', [])
-  return [...list].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  const list = store.get('folders', []) as Array<
+    ConnectionFolder | (Omit<ConnectionFolder, 'parentId'> & { parentId?: string | null })
+  >
+  return [...list]
+    .map(ensureFolderParent)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 
 /** Persist the full folder list. */

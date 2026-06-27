@@ -15,7 +15,9 @@
  */
 
 import { promises as fs } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { resolveAdapterByConnectionId } from './searchEngine.service'
+import { sendImportProgress } from './jobProgress'
 import type {
   ApiResponse,
   ImportExecuteRequest,
@@ -351,9 +353,42 @@ export async function runImport(
   req: ImportExecuteRequest
 ): Promise<ApiResponse<ImportExecuteResult>> {
   const { connectionId, index, filePath, format, mode } = req
+  // V0.3.7 B-3: every import gets a jobId so the renderer can
+  // correlate progress events with the final result. We always
+  // emit a terminal `completed` or `failed` event, even if the
+  // job threw on the first stage — that way the renderer can
+  // close its loading state no matter where the error came from.
+  const jobId = randomUUID()
+  const emit = (
+    stage: 'reading' | 'parsing' | 'clearing' | 'writing' | 'completed' | 'failed',
+    patch: {
+      percent?: number | null
+      total?: number | null
+      processed?: number | null
+      success?: number
+      failed?: number
+      message?: string
+    }
+  ): void => {
+    sendImportProgress({
+      jobId,
+      stage,
+      percent: patch.percent ?? null,
+      total: patch.total ?? null,
+      processed: patch.processed ?? null,
+      success: patch.success ?? 0,
+      failed: patch.failed ?? 0,
+      message: patch.message
+    })
+  }
   try {
+    emit('reading', { percent: null, total: null, processed: null })
+
     const resolvedFormat = resolveFormat(filePath, format)
     const parsed = await readAndParse(filePath, resolvedFormat)
+    const total = parsed.rows.length
+
+    emit('parsing', { percent: 100, total, processed: total })
 
     const { connection, adapter } = await resolveAdapterByConnectionId(
       connectionId
@@ -362,8 +397,29 @@ export async function runImport(
     const adapterInput: ImportInput = {
       index,
       rows: parsed.rows.map((r) => ({ id: r.id, source: r.source })),
-      mode
+      mode,
+      // V0.3.7 B-3: forward batch-level success/failed counters
+      // from the adapter so the renderer can update the progress
+      // bar after each `_bulk` batch.
+      onBatchProgress: ({ success, failed }) => {
+        const processed = success + failed
+        emit('writing', {
+          percent: total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : null,
+          total,
+          processed,
+          success,
+          failed
+        })
+      }
     }
+
+    // Tell the renderer we're about to start writing. The
+    // `clearing` stage only fires for `replace` mode — it covers
+    // the `_delete_by_query` round-trip the adapter makes first.
+    if (mode === 'replace' && total > 0) {
+      emit('clearing', { percent: 0, total, processed: 0 })
+    }
+    emit('writing', { percent: 0, total, processed: 0 })
 
     let result
     try {
@@ -374,19 +430,34 @@ export async function runImport(
       // but the legacy SDK surfaced the same wording for the wipe
       // case, so we preserve that.
       if (mode === 'replace') {
+        const msg = `清空索引 "${index}" 失败：${errMsg(err)}`
+        emit('failed', {
+          percent: null,
+          total,
+          processed: null,
+          message: msg
+        })
         return {
           success: false,
-          error: {
-            message: `清空索引 "${index}" 失败：${errMsg(err)}`
-          }
+          error: { message: msg }
         }
       }
       throw err
     }
 
+    emit('completed', {
+      percent: 100,
+      total,
+      processed: total,
+      success: result.success,
+      failed: result.failed,
+      message: `导入完成：成功 ${result.success}，失败 ${result.failed}`
+    })
+
     return {
       success: true,
       data: {
+        jobId,
         connectionId,
         index,
         format: resolvedFormat,
@@ -397,9 +468,16 @@ export async function runImport(
       }
     }
   } catch (err) {
+    const msg = errMsg(err)
+    emit('failed', {
+      percent: null,
+      total: null,
+      processed: null,
+      message: msg
+    })
     return {
       success: false,
-      error: { message: errMsg(err) }
+      error: { message: msg }
     }
   }
 }

@@ -23,6 +23,11 @@ interface Props {
   emptyText?: string
   /** Max height of the scroll area. Defaults to a generous 480px. */
   maxHeight?: number
+  /** Extra actions rendered in the toolbar strip next to the
+   *  "copy" button. V0.3.2 A-2 uses this to mount the Settings
+   *  edit button without forcing every caller to fork the
+   *  component. */
+  toolbar?: React.ReactNode
 }
 
 export default function JsonView({
@@ -30,7 +35,8 @@ export default function JsonView({
   loading,
   error,
   emptyText,
-  maxHeight = 480
+  maxHeight = 480,
+  toolbar
 }: Props): JSX.Element {
   const { message } = AntdApp.useApp()
   const [copied, setCopied] = useState(false)
@@ -86,6 +92,7 @@ export default function JsonView({
         >
           {copied ? '已复制' : '复制 JSON'}
         </Button>
+        {toolbar}
         <Text type="secondary" style={{ fontSize: 12 }}>
           {formatByteSize(formatted)} · {countLines(formatted)} 行
         </Text>

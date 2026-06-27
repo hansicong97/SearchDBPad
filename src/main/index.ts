@@ -40,11 +40,18 @@ import {
 import { getClusterHealth, getClusterInfo } from './services/cluster.service'
 import { searchEngineDetect } from './services/searchEngine.service'
 import {
+  closeIndex,
   createIndex,
   deleteIndex,
   getIndexMapping,
   getIndexSettings,
-  listIndices
+  listIndices,
+  openIndex,
+  updateIndexMapping,
+  updateIndexSettings,
+  getIndexShards,
+  relocateShard,
+  cancelShardAllocation
 } from './services/index.service'
 import {
   createDocument,
@@ -54,6 +61,23 @@ import {
 } from './services/document.service'
 import { runExport } from './services/export.service'
 import { detectFormat, importPreview, runImport } from './services/import.service'
+import {
+  addAlias,
+  deleteAlias,
+  listAliases
+} from './services/alias.service'
+import {
+  createIndexTemplate,
+  deleteIndexTemplate,
+  getIndexTemplate,
+  listIndexTemplates
+} from './services/template.service'
+import {
+  createDslFavorite,
+  deleteDslFavorite,
+  listDslFavorites,
+  updateDslFavorite
+} from './services/dslFavorite.service'
 
 const isDev = process.env.NODE_ENV === 'development'
 
@@ -166,6 +190,62 @@ function registerIpcHandlers(): void {
   /* Index management (phase 13) */
   ipcMain.handle(IpcChannels.IndexCreate, (_evt, req) => createIndex(req))
   ipcMain.handle(IpcChannels.IndexDelete, (_evt, req) => deleteIndex(req))
+
+  /* Index lifecycle (V0.3.1 A-1) */
+  ipcMain.handle(IpcChannels.IndexClose, (_evt, req) => closeIndex(req))
+  ipcMain.handle(IpcChannels.IndexOpen, (_evt, req) => openIndex(req))
+
+  /* Index settings (V0.3.2 A-2) */
+  ipcMain.handle(IpcChannels.IndexUpdateSettings, (_evt, req) =>
+    updateIndexSettings(req)
+  )
+
+  /* Index mapping (V0.3.3 A-3) */
+  ipcMain.handle(IpcChannels.IndexUpdateMapping, (_evt, req) =>
+    updateIndexMapping(req)
+  )
+
+  /* Shard management (V0.3.9 E-7) */
+  ipcMain.handle(IpcChannels.ShardList, (_evt, req) =>
+    getIndexShards(req.connectionId, req.index)
+  )
+  ipcMain.handle(IpcChannels.ShardRelocate, (_evt, req) => relocateShard(req))
+  ipcMain.handle(IpcChannels.ShardCancelAllocation, (_evt, req) =>
+    cancelShardAllocation(req)
+  )
+
+  /* Alias management (V0.3.4 A-4) */
+  ipcMain.handle(IpcChannels.AliasList, (_evt, ref) =>
+    listAliases(ref.connectionId)
+  )
+  ipcMain.handle(IpcChannels.AliasAdd, (_evt, req) => addAlias(req))
+  ipcMain.handle(IpcChannels.AliasDelete, (_evt, req) => deleteAlias(req))
+
+  /* Index templates (V0.3.4 A-5) */
+  ipcMain.handle(IpcChannels.IndexTemplateList, (_evt, ref) =>
+    listIndexTemplates(ref.connectionId)
+  )
+  ipcMain.handle(IpcChannels.IndexTemplateGet, (_evt, req) =>
+    getIndexTemplate(req)
+  )
+  ipcMain.handle(IpcChannels.IndexTemplateCreate, (_evt, req) =>
+    createIndexTemplate(req)
+  )
+  ipcMain.handle(IpcChannels.IndexTemplateDelete, (_evt, req) =>
+    deleteIndexTemplate(req)
+  )
+
+  /* DSL favorites (V0.3.5 B-4) */
+  ipcMain.handle(IpcChannels.DslFavoriteList, () => listDslFavorites())
+  ipcMain.handle(IpcChannels.DslFavoriteCreate, (_evt, input) =>
+    createDslFavorite(input)
+  )
+  ipcMain.handle(IpcChannels.DslFavoriteUpdate, (_evt, input) =>
+    updateDslFavorite(input)
+  )
+  ipcMain.handle(IpcChannels.DslFavoriteDelete, (_evt, id) =>
+    deleteDslFavorite(id)
+  )
 
   /* Document search (phase 5) */
   ipcMain.handle(IpcChannels.DocumentSearch, (_evt, req) =>

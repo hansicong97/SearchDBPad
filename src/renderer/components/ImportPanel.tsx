@@ -26,6 +26,7 @@ import {
   Collapse,
   Form,
   Input,
+  Progress,
   Radio,
   Select,
   Space,
@@ -38,7 +39,8 @@ import {
   CloseCircleOutlined,
   ExclamationCircleOutlined,
   FileTextOutlined,
-  ImportOutlined
+  ImportOutlined,
+  LoadingOutlined
 } from '@ant-design/icons'
 import { useWorkspaceStore } from '../stores/workspace.store'
 import type {
@@ -47,7 +49,9 @@ import type {
   ImportFormat,
   ImportMode,
   ImportPreviewResult,
-  ImportPreviewRow
+  ImportPreviewRow,
+  ImportProgress,
+  ImportStage
 } from '@shared/ipc'
 
 const { Text, Paragraph } = Typography
@@ -111,6 +115,22 @@ export default function ImportPanel(): JSX.Element {
   const [result, setResult] = useState<ImportExecuteResult | null>(null)
   const [importing, setImporting] = useState<boolean>(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  // V0.3.7 B-3: live progress for the current import job. Reset
+  // on every new run so we don't briefly show numbers from a
+  // previous job. The jobId on the latest event is matched against
+  // the result we get back from `runImport` to drop stale events.
+  const [progress, setProgress] = useState<ImportProgress | null>(null)
+
+  // Subscribe to import progress events. The callback is stable
+  // across renders (we store the latest progress in state and
+  // close over `setProgress`); the unsubscribe handle is captured
+  // for cleanup on unmount.
+  useEffect(() => {
+    const unsubscribe = window.esApi.importDocs.onProgress((p) => {
+      setProgress(p)
+    })
+    return unsubscribe
+  }, [])
 
   // Keep the target index in sync when the workspace's selected index
   // changes (e.g. user picks another index in the sidebar), unless the
@@ -133,6 +153,10 @@ export default function ImportPanel(): JSX.Element {
     setResult(null)
     setPreview(null)
     setPickedFile(null)
+    // V0.3.7 B-3: a new file means a new job — drop any leftover
+    // progress from the previous one so the UI doesn't show
+    // mid-run numbers for a job that hasn't started yet.
+    setProgress(null)
     const res = await window.esApi.importDocs.pickFile({
       format: 'json'
     })
@@ -218,6 +242,10 @@ export default function ImportPanel(): JSX.Element {
       if (!ok) return
     }
     setImporting(true)
+    // V0.3.7 B-3: wipe the progress before kicking off the job
+    // so the UI doesn't show numbers from a previous import
+    // until the first event for this run lands.
+    setProgress(null)
     try {
       const res = await runImport({
         connectionId: activeConnectionId,
@@ -228,6 +256,8 @@ export default function ImportPanel(): JSX.Element {
       })
       if (!res || !res.success || !res.data) {
         setErrorMsg(res?.error?.message ?? '导入失败')
+        // Keep the latest `failed` event visible so the user can
+        // see what stage we got to — the message comes from main.
         return
       }
       setResult(res.data)
@@ -295,6 +325,38 @@ export default function ImportPanel(): JSX.Element {
       key: 'error'
     }
   ]
+
+  // V0.3.7 B-3: human-readable labels for each import stage.
+  // Kept local to this component so the wording is owned by the
+  // panel that paints it.
+  const STAGE_LABEL: Record<ImportStage, string> = {
+    reading: '读取文件中',
+    parsing: '解析文件中',
+    clearing: '清空索引中',
+    writing: '写入文档中',
+    completed: '已完成',
+    failed: '失败'
+  }
+
+  // Only show the progress card while a job is running OR the
+  // terminal event for the most recent job hasn't been consumed
+  // by the result card yet. The terminal stages (`completed` /
+  // `failed`) are shown briefly until the user moves on or the
+  // result card replaces them.
+  const showProgress =
+    !!progress &&
+    (importing ||
+      progress.stage === 'completed' ||
+      progress.stage === 'failed')
+  const progressPercent = progress?.percent ?? 0
+  const progressStatus: 'normal' | 'success' | 'exception' | 'active' =
+    progress?.stage === 'completed'
+      ? 'success'
+      : progress?.stage === 'failed'
+        ? 'exception'
+        : progress && progress.percent !== null
+          ? 'active'
+          : 'normal'
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -408,6 +470,65 @@ export default function ImportPanel(): JSX.Element {
           message="导入失败"
           description={errorMsg}
         />
+      ) : null}
+
+      {/* V0.3.7 B-3: live progress card. Lives between the
+          error/alert region and the final result card so the
+          user sees the run progress and then the completed
+          outcome in a single vertical flow. */}
+      {showProgress && progress ? (
+        <Card
+          size="small"
+          title={
+            <Space>
+              {progress.stage === 'completed' ? (
+                <CheckCircleOutlined style={{ color: '#52c41a' }} />
+              ) : progress.stage === 'failed' ? (
+                <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+              ) : (
+                <LoadingOutlined />
+              )}
+              <Text>导入进度</Text>
+              <Tag color="blue">{STAGE_LABEL[progress.stage]}</Tag>
+            </Space>
+          }
+        >
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Progress
+              percent={progressPercent}
+              status={progressStatus}
+              showInfo
+            />
+            <Space size="large" wrap>
+              {progress.total !== null ? (
+                <Text>
+                  总计{' '}
+                  <Text strong>{progress.total.toLocaleString('en-US')}</Text>{' '}
+                  条
+                </Text>
+              ) : null}
+              {progress.processed !== null ? (
+                <Text type="secondary">
+                  已处理{' '}
+                  <Text strong>
+                    {progress.processed.toLocaleString('en-US')}
+                  </Text>
+                </Text>
+              ) : null}
+              <Text type="success">
+                成功 <Text strong>{progress.success.toLocaleString('en-US')}</Text>
+              </Text>
+              <Text type={progress.failed > 0 ? 'danger' : 'secondary'}>
+                失败 <Text strong>{progress.failed.toLocaleString('en-US')}</Text>
+              </Text>
+            </Space>
+            {progress.message ? (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {progress.message}
+              </Text>
+            ) : null}
+          </Space>
+        </Card>
       ) : null}
 
       {preview && preview.warnings.length > 0 ? (

@@ -35,6 +35,16 @@ interface ConnectionState {
   ) => Promise<ConnectionTestOutcome>
   clearError: () => void
 
+  /* V0.3.9 E-3: lightweight move-to-folder action. Used by drag
+   * and drop AND the row menu's "移动到目录" submenu. We reuse
+   * the standard `update` IPC but pass only the fields that can
+   * change (folderId) — the main-process service is responsible
+   * for keeping the rest of the connection intact. */
+  moveConnectionToFolder: (
+    id: string,
+    folderId: string | null
+  ) => Promise<boolean>
+
   fetchFolders: () => Promise<void>
   createFolder: (input: ConnectionFolderInput) => Promise<boolean>
   updateFolder: (input: ConnectionFolderInput) => Promise<boolean>
@@ -111,6 +121,55 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
       return true
     }
     set({ error: res.error?.message ?? '删除连接失败' })
+    return false
+  },
+
+  // V0.3.9 E-3: drag-and-drop and the row menu's "移动到目录"
+  // action both go through here. The main-process update keeps
+  // every other field intact, so passing only `id` + `folderId`
+  // is sufficient. After a successful move we patch the local
+  // list optimistically — the IPC reload happens in `update`
+  // but skipping it for the optimistic case keeps the UI
+  // responsive on slow connections.
+  moveConnectionToFolder: async (id, folderId) => {
+    const current = useConnectionStore.getState().connections.find(
+      (c) => c.id === id
+    )
+    if (!current) return false
+    if (current.folderId === folderId) return true
+    // Optimistic patch for snappy feedback; the authoritative
+    // refresh fires from `update` below.
+    set((state) => ({
+      connections: state.connections.map((c) =>
+        c.id === id ? { ...c, folderId } : c
+      )
+    }))
+    const res = await window.esApi.connections.update({
+      id,
+      name: current.name,
+      url: current.url,
+      authType: current.authType,
+      username: current.username,
+      // V0.3.9 security: a move doesn't need the password. Sending
+      // it would also be wasteful; the service treats a blank
+      // password as "keep the stored one" so the stored credential
+      // is left intact without ever leaving the renderer store.
+      password: undefined,
+      folderId
+    })
+    if (res.success) {
+      const listRes = await window.esApi.connections.list()
+      if (listRes.success) set({ connections: listRes.data ?? [] })
+      return true
+    }
+    // Revert the optimistic patch on failure so the UI matches
+    // what's on disk.
+    set((state) => ({
+      connections: state.connections.map((c) =>
+        c.id === id ? { ...c, folderId: current.folderId ?? null } : c
+      ),
+      error: res.error?.message ?? '移动连接失败'
+    }))
     return false
   },
 

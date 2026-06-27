@@ -43,6 +43,11 @@ function App(): JSX.Element {
   const updateConnection = useConnectionStore((s) => s.update)
   const removeConnection = useConnectionStore((s) => s.remove)
   const testConnection = useConnectionStore((s) => s.test)
+  // V0.3.9 E-3: lightweight move-to-folder action used by drag
+  // and the row menu's "移动到目录" submenu.
+  const moveConnectionToFolder = useConnectionStore(
+    (s) => s.moveConnectionToFolder
+  )
 
   const folders = useConnectionStore((s) => s.folders)
   const fetchFolders = useConnectionStore((s) => s.fetchFolders)
@@ -53,6 +58,11 @@ function App(): JSX.Element {
   const activeId = useWorkspaceStore((s) => s.activeConnectionId)
   const setActive = useWorkspaceStore((s) => s.setActiveConnection)
   const clearWorkspace = useWorkspaceStore((s) => s.clear)
+  // V0.3.5 B-4: DSL favorites are global (not per-connection),
+  // so we fetch them once at app start. The DslFavoriteModal also
+  // re-fetches on open so concurrent edits from another panel are
+  // picked up.
+  const fetchDslFavorites = useWorkspaceStore((s) => s.fetchDslFavorites)
 
   const themeMode = useThemeStore((s) => s.mode)
   const isDark = themeMode === 'dark'
@@ -70,11 +80,17 @@ function App(): JSX.Element {
     null
   )
   const [folderModalOpen, setFolderModalOpen] = useState(false)
+  // V0.3.9 E-4: when opening the modal from a folder's "新建子目录"
+  // menu, the parent id is captured here and threaded through to
+  // the modal. `null` means a top-level create.
+  const [folderParentId, setFolderParentId] = useState<string | null>(null)
 
   useEffect(() => {
     void fetchConnections()
     void fetchFolders()
-  }, [fetchConnections, fetchFolders])
+    // V0.3.5 B-4: prime the DSL favorites list at app start.
+    void fetchDslFavorites()
+  }, [fetchConnections, fetchFolders, fetchDslFavorites])
 
   useEffect(() => {
     if (error) message.error(error)
@@ -184,30 +200,61 @@ function App(): JSX.Element {
 
   const openCreateFolder = (): void => {
     setEditingFolder(null)
+    setFolderParentId(null)
+    setFolderModalOpen(true)
+  }
+
+  // V0.3.9 E-4: open the modal pre-bound to a parent so the
+  // created folder becomes a child of `parent`.
+  const openCreateSubfolder = (parent: ConnectionFolder): void => {
+    setEditingFolder(null)
+    setFolderParentId(parent.id)
     setFolderModalOpen(true)
   }
 
   const openEditFolder = (folder: ConnectionFolder): void => {
     setEditingFolder(folder)
+    setFolderParentId(null)
     setFolderModalOpen(true)
   }
 
   const closeFolderModal = (): void => {
     setFolderModalOpen(false)
     setEditingFolder(null)
+    setFolderParentId(null)
   }
 
   const handleFolderSubmit = async (
     values: ConnectionFolderFormValues
   ): Promise<void> => {
+    const payload: ConnectionFolderFormValues = editingFolder
+      ? values
+      : { ...values, parentId: folderParentId ?? null }
     const ok = editingFolder
-      ? await updateFolder(values)
-      : await createFolder(values)
+      ? await updateFolder(payload)
+      : await createFolder(payload)
     if (ok) {
       message.success(editingFolder ? '已更新目录' : '已新建目录')
       closeFolderModal()
     }
   }
+
+  // V0.3.9 E-3: drag-and-drop and the row menu both arrive here.
+  // We close over `activeId` so we can decide whether to clear the
+  // workspace — moving the active connection to a different folder
+  // keeps the workspace as-is (folder changes don't affect ES
+  // session state), so no clearing is needed.
+  const handleMoveToFolder = useCallback(
+    async (conn: EsConnection, folderId: string | null): Promise<void> => {
+      const ok = await moveConnectionToFolder(conn.id, folderId)
+      if (ok) {
+        message.success(`已将 "${conn.name}" 移动到目录`)
+      } else {
+        message.error('移动连接失败')
+      }
+    },
+    [moveConnectionToFolder]
+  )
 
   const handleDeleteFolder = useCallback(
     (folder: ConnectionFolder): void => {
@@ -259,8 +306,10 @@ function App(): JSX.Element {
             onDelete={handleDelete}
             onTest={handleRowTest}
             onCreateFolder={openCreateFolder}
+            onCreateSubfolder={openCreateSubfolder}
             onEditFolder={openEditFolder}
             onDeleteFolder={handleDeleteFolder}
+            onMoveToFolder={handleMoveToFolder}
           />
         </Sider>
         <Content
@@ -311,6 +360,7 @@ function App(): JSX.Element {
       <ConnectionFolderModal
         open={folderModalOpen}
         initial={editingFolder}
+        parentId={editingFolder ? undefined : folderParentId}
         onCancel={closeFolderModal}
         onSubmit={handleFolderSubmit}
       />

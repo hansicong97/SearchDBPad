@@ -114,10 +114,21 @@ export default function SimpleQueryPanel(): JSX.Element {
 
   const handleRun = async (): Promise<void> => {
     if (!activeConnectionId || !selectedIndex) return
-    const body = buildSimpleDsl(field, operator, value)
-    if (!body) {
-      setFormError('请输入字段名')
-      return
+    // V0.3.9 E-6: when the field name is empty, skip the form
+    // builder entirely and run a match_all query so the user can
+    // browse every document in the index without first picking a
+    // field. We still keep pagination reasonable (RESULT_SIZE)
+    // so the response stays scannable.
+    let body: Record<string, unknown>
+    if (!field.trim()) {
+      body = { query: { match_all: {} }, size: RESULT_SIZE }
+    } else {
+      const built = buildSimpleDsl(field, operator, value)
+      if (!built) {
+        setFormError('请输入字段名')
+        return
+      }
+      body = built
     }
     if (valueRequired && value.trim() === '') {
       setFormError(`操作符「${operatorMeta?.label ?? operator}」需要查询值`)
@@ -167,14 +178,11 @@ export default function SimpleQueryPanel(): JSX.Element {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, height: '100%' }}>
       <Form layout="inline" onFinish={() => void handleRun()}>
-        <Form.Item
-          label="字段"
-          validateStatus={formError && !field.trim() ? 'error' : ''}
-        >
+        <Form.Item label="字段">
           <Input
             value={field}
             onChange={(e) => setField(e.target.value)}
-            placeholder="username"
+            placeholder="username（留空查询全部）"
             style={{ width: 200 }}
             allowClear
           />
@@ -233,7 +241,7 @@ export default function SimpleQueryPanel(): JSX.Element {
         ) : !simpleResults ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description="填写字段、操作符和值后点击查询"
+            description="填写字段、操作符和值后点击查询（字段留空会查询全部）"
           />
         ) : (
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
