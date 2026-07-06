@@ -588,11 +588,16 @@ export type ImportMode = 'append' | 'replace'
 
 /** Payload for `import:pickFile`. Opens the OS open dialog and returns
  *  the chosen file path plus the format inferred from the extension.
- *  The hint is what the renderer expects (e.g. preferred filter);
- *  the returned format is the resolved one and is never `'auto'`. */
+ *  V0.3.10 F-2: `format` is an OPTIONAL hint — when omitted the
+ *  native dialog opens with "all supported files" pre-selected so the
+ *  user does not have to switch filters to pick CSV / NDJSON. When
+ *  provided it pre-selects the matching single-format filter as a
+ *  convenience. The returned format is the resolved one and is never
+ *  `'auto'`. */
 export interface ImportPickFileRequest {
-  /** Pre-select filter — caller passes the format the user expects. */
-  format: Exclude<ImportFormat, 'auto'>
+  /** V0.3.10 F-2: optional pre-select hint. When omitted the dialog
+   *  defaults to the "all supported files" filter. */
+  format?: Exclude<ImportFormat, 'auto'>
 }
 
 export interface ImportPickFileResult {

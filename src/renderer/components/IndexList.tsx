@@ -102,6 +102,13 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
   const closeIndex = useWorkspaceStore((s) => s.closeIndex)
   const openIndex = useWorkspaceStore((s) => s.openIndex)
   const selectIndex = useWorkspaceStore((s) => s.selectIndex)
+  // V0.3.10 F-3 / F-4: jump-to-import variant. Used by the
+  // create-and-import flow so the workspace selects the new
+  // index AND lands on its "导入" tab with the modal-collected
+  // draft pre-filled in ImportPanel.
+  const selectIndexWithTab = useWorkspaceStore(
+    (s) => s.selectIndexWithTab
+  )
 
   const [keyword, setKeyword] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
@@ -391,8 +398,22 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
       <CreateIndexModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={(name) => {
-          selectIndex(name)
+        onCreated={(name, intent) => {
+          // V0.3.10 F-3: the modal's 导入数据 button lands on the
+          // new index's 导入 tab; 完成 lands on the default
+          // 文档 tab. Both paths go through `selectIndexWithTab`
+          // so the panel's intent is one-shot consumed.
+          if (intent?.tab === 'import') {
+            setCreateOpen(false)
+            selectIndexWithTab(name, 'import')
+          } else if (intent?.tab === 'documents') {
+            setCreateOpen(false)
+            selectIndexWithTab(name, 'documents')
+          } else {
+            // Defensive fallback (no intent, e.g. older callers).
+            setCreateOpen(false)
+            selectIndex(name)
+          }
         }}
       />
     </div>

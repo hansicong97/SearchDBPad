@@ -71,6 +71,13 @@ import type {
 } from '@shared/ipc'
 import type { SearchEngineServerInfo } from '@shared/searchEngine'
 
+/** V0.3.10 F-3: tab key the workspace can ask the detail
+ *  panel to land on. We include `documents` (the default) and
+ *  `import` (the create-and-import landing tab). The detail
+ *  panel itself supports more tabs but those are chosen by the
+ *  user inside the panel, not by a cross-flow jump. */
+export type IndexDetailTabKey = 'documents' | 'import'
+
 /** Default page size for the document browse tab. */
 const DEFAULT_PAGE_SIZE = 20
 
@@ -181,6 +188,15 @@ interface WorkspaceState {
   dslTabs: DslTab[]
   activeDslTabId: string | null
 
+  /* V0.3.10 F-3: one-shot "open this index and land on a specific
+   * tab" intent. The IndexDetailPanel consumes the value the first
+   * time it mounts for the target index and then clears it, so the
+   * user can keep navigating between tabs after the jump without
+   * being pulled back to the original one. The list of allowed
+   * tabs is intentionally narrow: it is a navigation hint, not a
+   * free-form user setting. */
+  pendingIndexDetailTab: IndexDetailTabKey | null
+
   setActiveConnection: (id: string | null) => void
 
   fetchCluster: (connectionId: string) => Promise<void>
@@ -189,6 +205,17 @@ interface WorkspaceState {
   refreshAll: () => Promise<void>
 
   selectIndex: (name: string | null) => void
+  /* V0.3.10 F-3: open `name` and ask the detail panel to land on
+   * `tab`. No-op if `name` is null. The previous `importDraft`
+   * argument was removed in the F-3 revised flow: ImportPanel is
+   * always the entry point for picking the import file. */
+  selectIndexWithTab: (
+    name: string,
+    tab: IndexDetailTabKey
+  ) => void
+  /* V0.3.10 F-3: clear the pending tab after the panel has
+   * consumed it. Safe to call when nothing is pending. */
+  clearPendingIndexDetailIntent: () => void
   fetchMapping: (connectionId: string, index: string) => Promise<void>
   fetchSettings: (connectionId: string, index: string) => Promise<void>
   refreshIndexDetail: () => Promise<void>
@@ -441,6 +468,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   dslFavoritesLoading: false,
   dslFavoritesError: null,
 
+  /* V0.3.10 F-3 / F-4: one-shot intent that asks the detail panel
+   * to land on a specific tab (and optionally hand off an import
+   * draft to ImportPanel) when the user navigates from elsewhere
+   * in the app — most notably the create-and-import flow. */
+  pendingIndexDetailTab: null as IndexDetailTabKey | null,
+
   setActiveConnection: (id) => {
     if (id === get().activeConnectionId) return
     set({
@@ -643,6 +676,23 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       void get().fetchSettings(id, name)
       void get().fetchDocumentPage(id, name, 1, DEFAULT_PAGE_SIZE)
     }
+  },
+
+  /* V0.3.10 F-3 / F-4: navigate to `name` AND record a one-shot
+   * intent for the detail panel. The intent is cleared by the
+   * panel once it has applied it (see `IndexDetailPanel`). When
+   * `importDraft` is provided, ImportPanel will pre-fill itself
+   * with the file / format pair. The plain `selectIndex` path
+   * remains available for in-app navigation (e.g. clicking an
+   * index row) where no specific landing tab is requested. */
+  selectIndexWithTab: (name, tab) => {
+    set({ pendingIndexDetailTab: tab })
+    get().selectIndex(name)
+  },
+
+  clearPendingIndexDetailIntent: () => {
+    if (get().pendingIndexDetailTab === null) return
+    set({ pendingIndexDetailTab: null })
   },
 
   fetchMapping: async (connectionId, index) => {
@@ -1357,7 +1407,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       // `setActiveConnection` so re-selecting a connection (or
       // a different one) does not blow away the user's saved DSL.
       dslFavoritesLoading: false,
-      dslFavoritesError: null
+      dslFavoritesError: null,
+      // V0.3.10 F-3: wipe the one-shot navigation intent on
+      // workspace reset so a jump targeted at one connection's
+      // index never survives a sign-out.
+      pendingIndexDetailTab: null
     })
   }
 }))

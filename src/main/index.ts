@@ -314,20 +314,45 @@ async function pickExportSavePath(
 }
 
 /** Open the OS open dialog and return the chosen file path. The
- *  filter list is built from the caller's hint about the expected
- *  format; the format returned alongside is inferred from the
- *  extension of the chosen file (so the renderer does not have to
- *  re-derive it). */
+ *  filter list's first entry is "all supported files" so the user
+ *  sees JSON / NDJSON / CSV together and can pick any without
+ *  switching filters. Optional `req.format` may promote the matching
+ *  single-format filter to the top as a convenience, but the dialog
+ *  always opens with the broadest filter selected. The format
+ *  returned alongside is inferred from the extension of the chosen
+ *  file (so the renderer does not have to re-derive it). */
 async function pickImportFile(
   req: ImportPickFileRequest
 ): Promise<ApiResponse<ImportPickFileResult>> {
   const allFormats = ['json', 'ndjson', 'csv']
-  const singleName =
-    req.format === 'json' ? 'JSON 数组' : req.format.toUpperCase()
-  const filters = [
-    { name: singleName, extensions: [req.format] },
-    { name: '所有支持的文件', extensions: allFormats }
+  // V0.3.10 F-2: build the canonical filter order. The first entry
+  // is always "all supported files" so CSV / NDJSON are visible
+  // without switching filters. If `req.format` is provided, the
+  // matching single-format filter is placed right after the
+  // catch-all for one-click access.
+  const canonical: Array<{ name: string; extensions: string[] }> = [
+    { name: '所有支持的文件', extensions: allFormats },
+    { name: 'JSON 数组', extensions: ['json'] },
+    { name: 'NDJSON', extensions: ['ndjson'] },
+    { name: 'CSV', extensions: ['csv'] },
+    { name: '所有文件', extensions: ['*'] }
   ]
+  const singleExt = req.format
+  const singleName =
+    singleExt === 'json'
+      ? 'JSON 数组'
+      : singleExt === 'ndjson'
+        ? 'NDJSON'
+        : singleExt === 'csv'
+          ? 'CSV'
+          : null
+  const filters = singleExt && singleName
+    ? [
+        canonical[0],
+        { name: singleName, extensions: [singleExt] },
+        ...canonical.slice(1)
+      ]
+    : canonical
   const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
   const result = await dialog.showOpenDialog(win ?? undefined, {
     title: '选择导入文件',

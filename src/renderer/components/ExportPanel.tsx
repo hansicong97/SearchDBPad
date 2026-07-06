@@ -32,6 +32,7 @@ import {
   LoadingOutlined
 } from '@ant-design/icons'
 import { useWorkspaceStore } from '../stores/workspace.store'
+import { useJobTaskStore } from '../stores/jobTask.store'
 import { MAX_EXPORT_ROWS } from '@shared/ipc'
 import type { ExportFormat, ExportProgress, ExportStage } from '@shared/ipc'
 
@@ -83,6 +84,10 @@ export default function ExportPanel(): JSX.Element {
   // drop stale late events).
   const [progress, setProgress] = useState<ExportProgress | null>(null)
 
+  // V0.3.10 F-5: hand the export job to the global task store so
+  // the floating panel can show its progress and result.
+  const registerExportTask = useJobTaskStore((s) => s.registerExportTask)
+
   useEffect(() => {
     const unsubscribe = window.esApi.exportDocs.onProgress((p) => {
       setProgress(p)
@@ -128,6 +133,14 @@ export default function ExportPanel(): JSX.Element {
         return
       }
       const r = execRes.data
+      // V0.3.10 F-5: register the job in the global task store so
+      // the floating panel can track it across pages.
+      registerExportTask(r.jobId, {
+        connectionId: activeConnectionId as string,
+        index: selectedIndex as string,
+        format,
+        outputPath: r.outputPath
+      })
       setLastResult({
         outputPath: r.outputPath,
         rows: r.rows,

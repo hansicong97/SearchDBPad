@@ -1,5 +1,5 @@
 /**
- * Left sidebar (phase 3 + 15 UI update + V0.3.9).
+ * Left sidebar (phase 3 + 15 UI update + V0.3.9 + V0.3.10).
  *
  * Shows the connection list grouped by user-defined folders. The implicit
  * "未分组" bucket is rendered first and holds any connection whose
@@ -20,11 +20,19 @@
  *     tree top-down, indenting each level; the folder menu adds a
  *     "新建子目录" item that opens the folder modal pre-bound to
  *     the parent.
+ *
+ * V0.3.10 F-1 changes:
+ *   - The leading Badge no longer encodes the auth type. Basic auth
+ *     used to render as the animated blue `processing` dot, which
+ *     read like an "online" / "active" state and conflicted with
+ *     the blue "当前工作台" tag. The badge is now a neutral
+ *     visual anchor only (auth type is not shown in the list).
+ *   - The `Badge` import is kept off the import list since we no
+ *     longer use it.
  */
 
 import { useState } from 'react'
 import {
-  Badge,
   Button,
   Dropdown,
   Empty,
@@ -527,9 +535,12 @@ function ConnectionRow({
           width: '100%'
         }}
       >
-        <Badge
-          status={conn.authType === 'basic' ? 'processing' : 'default'}
-        />
+        {/* V0.3.10 F-1: the leading badge that previously encoded
+            the auth type is removed. Basic auth used to render as
+            a blue animated dot which read like "online" / "active"
+            and conflicted with the blue "当前工作台" tag. The
+            connection name + URL + "当前工作台" tag below are
+            enough to identify the row. */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <Tooltip title={conn.name} placement="topLeft">
             <Text

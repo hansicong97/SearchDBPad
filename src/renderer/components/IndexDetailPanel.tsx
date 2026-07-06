@@ -42,7 +42,7 @@
  * tab (no extra IPC traffic).
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button, Card, Space, Tabs, Tooltip, Typography } from 'antd'
 import {
   ArrowLeftOutlined,
@@ -112,6 +112,23 @@ export default function IndexDetailPanel({
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
   const aliasesLoading = useWorkspaceStore((s) => s.aliasesLoading)
 
+  // V0.3.10 F-3: when the workspace navigated here with a
+  // pending tab intent (e.g. from the create-and-import flow),
+  // apply it once on mount. The intent is then cleared so that
+  // later, user-driven tab clicks stay sticky. The effect
+  // depends on `indexName` so it re-fires when the user jumps
+  // to a different index via the same flow.
+  const pendingTab = useWorkspaceStore((s) => s.pendingIndexDetailTab)
+  const clearPending = useWorkspaceStore(
+    (s) => s.clearPendingIndexDetailIntent
+  )
+  useEffect(() => {
+    if (pendingTab) {
+      setActiveTab(pendingTab)
+    }
+    clearPending()
+  }, [indexName, pendingTab, clearPending])
+
   // Header refresh is per-tab so it does the right thing for whichever
   // tab the user is looking at. Mapping/Settings tabs share
   // `refreshIndexDetail`; the 文档 tab refreshes its own page; 简单查询
@@ -175,8 +192,7 @@ export default function IndexDetailPanel({
           disabled={
             activeTab === 'query' ||
             activeTab === 'simple' ||
-            activeTab === 'export' ||
-            activeTab === 'import'
+            activeTab === 'export'
           }
         >
           刷新

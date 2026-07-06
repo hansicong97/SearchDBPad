@@ -17,6 +17,7 @@ import ConnectionForm, {
 import ConnectionFolderModal, {
   type ConnectionFolderFormValues
 } from './components/ConnectionFolderModal'
+import JobTaskFloatButton from './components/JobTaskFloatButton'
 import WorkspacePage from './pages/WorkspacePage'
 import { useConnectionStore } from './stores/connection.store'
 import { useWorkspaceStore } from './stores/workspace.store'
@@ -364,6 +365,11 @@ function App(): JSX.Element {
         onCancel={closeFolderModal}
         onSubmit={handleFolderSubmit}
       />
+
+      {/* V0.3.10 F-5: session-wide task aggregator + right-bottom
+          floating button + drawer. Lives in `App.tsx` so the
+          subscription survives connection / index / tab switches. */}
+      <JobTaskFloatButton />
     </Layout>
   )
 }

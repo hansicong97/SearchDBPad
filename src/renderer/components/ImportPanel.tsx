@@ -43,6 +43,7 @@ import {
   LoadingOutlined
 } from '@ant-design/icons'
 import { useWorkspaceStore } from '../stores/workspace.store'
+import { useJobTaskStore } from '../stores/jobTask.store'
 import type {
   ImportExecuteResult,
   ImportFailure,
@@ -100,6 +101,10 @@ export default function ImportPanel(): JSX.Element {
   const selectedIndex = useWorkspaceStore((s) => s.selectedIndex)
   const indexList = useWorkspaceStore((s) => s.indices)
   const runImport = useWorkspaceStore((s) => s.runImport)
+  // V0.3.10 F-5: when we kick off an import we register the job in
+  // the global task store so the floating panel can show it. The
+  // `jobId` comes back from `runImport` in the result envelope.
+  const registerImportTask = useJobTaskStore((s) => s.registerImportTask)
 
   const [targetIndex, setTargetIndex] = useState<string>(selectedIndex ?? '')
   const [pickedFile, setPickedFile] = useState<{
@@ -157,9 +162,10 @@ export default function ImportPanel(): JSX.Element {
     // progress from the previous one so the UI doesn't show
     // mid-run numbers for a job that hasn't started yet.
     setProgress(null)
-    const res = await window.esApi.importDocs.pickFile({
-      format: 'json'
-    })
+    // V0.3.10 F-2: omit `format` so the native dialog opens with
+    // "all supported files" pre-selected. The user can pick
+    // JSON / NDJSON / CSV without switching filters.
+    const res = await window.esApi.importDocs.pickFile({})
     if (!res.success || !res.data) {
       setErrorMsg(res.error?.message ?? '打开文件对话框失败')
       return
@@ -260,6 +266,17 @@ export default function ImportPanel(): JSX.Element {
         // see what stage we got to — the message comes from main.
         return
       }
+      // V0.3.10 F-5: hand the job to the global task store so the
+      // floating panel can show its progress and result. The
+      // `jobId` is what main will use in subsequent progress
+      // events; we register AFTER the IPC resolves to be sure the
+      // jobId is the canonical one main chose.
+      registerImportTask(res.data.jobId, {
+        connectionId: activeConnectionId,
+        index: targetIndex,
+        filePath: pickedFile.filePath,
+        format
+      })
       setResult(res.data)
       const r = res.data
       if (r.failed === 0) {
