@@ -12,6 +12,14 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { resolveAdapterByConnectionId } from './searchEngine.service'
 import { sendExportProgress } from './jobProgress'
+import {
+  clearCancelled,
+  createCancelledError,
+  isCancelled,
+  isCancelledError,
+  markJobActive,
+  USER_STOPPED_MESSAGE
+} from './jobCancel.service'
 import type {
   ApiResponse,
   DocumentHit,
@@ -138,6 +146,9 @@ export async function runExport(
   // can close its loading state even when an early validation
   // fails. The renderer correlates by `jobId`.
   const jobId = randomUUID()
+  let lastPercent: number | null = null
+  let lastTotal: number | null = null
+  let lastBytes: number | null = null
   const emit = (
     stage: 'querying' | 'writing' | 'completed' | 'failed',
     patch: {
@@ -147,44 +158,65 @@ export async function runExport(
       message?: string
     }
   ): void => {
+    lastPercent = patch.percent ?? null
+    lastTotal = patch.total ?? null
+    lastBytes = patch.bytes ?? null
     sendExportProgress({
       jobId,
       stage,
-      percent: patch.percent ?? null,
-      total: patch.total ?? null,
-      bytes: patch.bytes ?? null,
+      percent: lastPercent,
+      total: lastTotal,
+      bytes: lastBytes,
       message: patch.message
     })
   }
+  const throwIfCancelled = (): void => {
+    if (isCancelled(jobId)) throw createCancelledError()
+  }
+  markJobActive(jobId)
 
   try {
     emit('querying', { percent: null, total: null, bytes: null })
+    throwIfCancelled()
 
     const { connection, adapter } = await resolveAdapterByConnectionId(
       connectionId
     )
+    throwIfCancelled()
 
-    const adapterInput: ExportInput = { index, maxRows, query }
+    const adapterInput: ExportInput = {
+      index,
+      maxRows,
+      query,
+      isCancelled: () => isCancelled(jobId)
+    }
     const result = await adapter.exportDocuments(connection, adapterInput)
+    throwIfCancelled()
 
     emit('writing', {
       percent: 50,
       total: result.hits.length,
       bytes: 0
     })
+    throwIfCancelled()
 
     let payload = formatHits(result.hits, format, index)
+    throwIfCancelled()
     // CSV only: prepend UTF-8 BOM so Excel auto-detects encoding and
     // does not garble Chinese (and other non-ASCII) text.
     if (format === 'csv' && payload.length > 0) {
-      payload = '\uFEFF' + payload
+      payload = '﻿' + payload
     }
+    throwIfCancelled()
 
     // Make sure the parent directory exists — `showSaveDialog` should
     // give us a writable path, but a custom prompt could pick anything.
     await fs.mkdir(path.dirname(outputPath), { recursive: true })
+    throwIfCancelled()
     await fs.writeFile(outputPath, payload, 'utf8')
+    throwIfCancelled()
     const stat = await fs.stat(outputPath)
+    throwIfCancelled()
 
     emit('completed', {
       percent: 100,
@@ -206,16 +238,19 @@ export async function runExport(
       }
     }
   } catch (err) {
-    const message = describeExportError(err, index)
+    const stopped = isCancelledError(err) || isCancelled(jobId)
+    const message = stopped ? USER_STOPPED_MESSAGE : describeExportError(err, index)
     emit('failed', {
-      percent: null,
-      total: null,
-      bytes: null,
+      percent: stopped ? lastPercent : null,
+      total: stopped ? lastTotal : null,
+      bytes: stopped ? lastBytes : null,
       message
     })
     return {
       success: false,
       error: { message }
     }
+  } finally {
+    clearCancelled(jobId)
   }
 }

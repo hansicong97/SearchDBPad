@@ -48,6 +48,12 @@ function truncate(s: string | undefined, n: number): string | undefined {
   return s.length <= n ? s : s.slice(0, n) + '…'
 }
 
+function throwIfCancelled(input: ImportInput): void {
+  if (input.isCancelled?.()) {
+    throw new Error('用户已停止')
+  }
+}
+
 /** `replace` mode: wipe the index's existing docs first. Failures
  *  here MUST short-circuit the import — the spec calls this out to
  *  avoid partial success. */
@@ -83,15 +89,20 @@ export async function importDocuments(
 ): Promise<ImportResult> {
   const total = input.rows.length
 
+  throwIfCancelled(input)
+
   if (input.mode === 'replace' && total > 0) {
     // Surface wipe failures via the normal SearchEngineError path —
     // the service will translate to ApiResponse.error.
     await clearIndexForReplace(connection, input.index)
+    throwIfCancelled(input)
   }
 
   if (total === 0) {
+    throwIfCancelled(input)
     if (input.mode === 'replace') {
       await refreshIndex(connection, input.index)
+      throwIfCancelled(input)
     }
     return {
       index: input.index,
@@ -107,6 +118,7 @@ export async function importDocuments(
   const failures: ImportFailure[] = []
 
   for (let start = 0; start < total; start += BULK_BATCH_SIZE) {
+    throwIfCancelled(input)
     const batch = input.rows.slice(start, start + BULK_BATCH_SIZE)
     const lines: string[] = []
     for (const row of batch) {
@@ -125,6 +137,7 @@ export async function importDocuments(
         ndjsonBody: ndjson
       }
     )
+    throwIfCancelled(input)
 
     const items = Array.isArray(response.items) ? response.items : []
     for (let i = 0; i < items.length; i++) {
@@ -150,11 +163,15 @@ export async function importDocuments(
     // layer so it can wrap the counts into a jobId-tagged event
     // for the renderer. The callback is optional — adapters that
     // do not opt in simply skip this notification.
+    throwIfCancelled(input)
     input.onBatchProgress?.({ success, failed })
+    throwIfCancelled(input)
   }
 
   // Best-effort refresh so the next UI search sees the new docs.
+  throwIfCancelled(input)
   await refreshIndex(connection, input.index)
+  throwIfCancelled(input)
 
   return {
     index: input.index,

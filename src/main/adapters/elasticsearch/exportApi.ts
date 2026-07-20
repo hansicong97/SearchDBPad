@@ -27,6 +27,12 @@ interface EsSearchResponse {
   }
 }
 
+function throwIfCancelled(input: ExportInput): void {
+  if (input.isCancelled?.()) {
+    throw new Error('用户已停止')
+  }
+}
+
 export async function exportDocuments(
   connection: SearchConnection,
   input: ExportInput
@@ -39,20 +45,24 @@ export async function exportDocuments(
     // Default to match_all if no DSL body was supplied.
     query: input.query ?? { match_all: {} }
   }
+  throwIfCancelled(input)
   const response = await elasticsearchRequest<EsSearchResponse>(connection, {
     method: 'POST',
     path: `/${input.index}/_search`,
     body
   })
+  throwIfCancelled(input)
   const rawHits = Array.isArray(response.hits?.hits)
     ? response.hits!.hits!
     : []
+  throwIfCancelled(input)
   const hits: DocumentHit[] = rawHits.map((h) => ({
     _id: h._id ?? '',
     _index: h._index ?? input.index,
     _score: typeof h._score === 'number' ? h._score : null,
     _source: (h._source ?? null) as Record<string, unknown> | null
   }))
+  throwIfCancelled(input)
   let total = 0
   const t = response.hits?.total
   if (typeof t === 'number') {

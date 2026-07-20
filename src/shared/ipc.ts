@@ -89,12 +89,14 @@ export const IpcChannels = {
 
   /* Document export (phase 8) */
   ExportExecute: 'export:execute',
+  ExportCancel: 'export:cancel',
   ExportPickSavePath: 'export:pickSavePath',
 
   /* Document import (phase 9) */
   ImportPickFile: 'import:pickFile',
   ImportPreview: 'import:preview',
   ImportExecute: 'import:execute',
+  ImportCancel: 'import:cancel',
 
   /* V0.3.7 B-3: long-running job progress events. The main process
    * uses `webContents.send` (not `ipcMain.handle`) to push these;
@@ -560,6 +562,18 @@ export interface ExportResult {
   bytes: number
 }
 
+/** Payload for `export:cancel`. V0.3.11 G-2: cooperative stop for
+ *  a running export job. The main process records the job id and the
+ *  running service observes it at the next safe checkpoint. */
+export interface ExportCancelRequest {
+  jobId: string
+}
+
+export interface ExportCancelResult {
+  jobId: string
+  cancelled: boolean
+}
+
 /** Payload for `export:pickSavePath`. Opens the OS save dialog and
  *  returns the chosen path (or `null` if the user cancelled). */
 export interface ExportPickPathRequest {
@@ -676,6 +690,17 @@ export interface ImportExecuteResult {
   failed: number
   /** First N failures (capped server-side at e.g. 20). */
   failures: ImportFailure[]
+}
+
+/** Payload for `import:cancel`. V0.3.11 G-1: cooperative stop for
+ *  a running import job. */
+export interface ImportCancelRequest {
+  jobId: string
+}
+
+export interface ImportCancelResult {
+  jobId: string
+  cancelled: boolean
 }
 
 /* ------------------- Job progress (V0.3.7 B-3) ------------------- */

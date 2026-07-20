@@ -20,8 +20,12 @@ import path from 'node:path'
 import { IpcChannels } from '../shared/ipc'
 import type {
   ApiResponse,
+  ExportCancelRequest,
+  ExportCancelResult,
   ExportPickPathRequest,
   ExportPickPathResult,
+  ImportCancelRequest,
+  ImportCancelResult,
   ImportFormat,
   ImportPickFileRequest,
   ImportPickFileResult
@@ -61,6 +65,7 @@ import {
 } from './services/document.service'
 import { runExport } from './services/export.service'
 import { detectFormat, importPreview, runImport } from './services/import.service'
+import { markCancelled, isJobActive } from './services/jobCancel.service'
 import {
   addAlias,
   deleteAlias,
@@ -268,6 +273,9 @@ function registerIpcHandlers(): void {
     pickExportSavePath(req)
   )
   ipcMain.handle(IpcChannels.ExportExecute, (_evt, req) => runExport(req))
+  ipcMain.handle(IpcChannels.ExportCancel, (_evt, req: ExportCancelRequest) =>
+    cancelExport(req)
+  )
 
   /* Document import (phase 9) */
   ipcMain.handle(IpcChannels.ImportPickFile, (_evt, req: ImportPickFileRequest) =>
@@ -275,11 +283,36 @@ function registerIpcHandlers(): void {
   )
   ipcMain.handle(IpcChannels.ImportPreview, (_evt, req) => importPreview(req))
   ipcMain.handle(IpcChannels.ImportExecute, (_evt, req) => runImport(req))
+  ipcMain.handle(IpcChannels.ImportCancel, (_evt, req: ImportCancelRequest) =>
+    cancelImport(req)
+  )
 
   /* Search engine metadata (V0.3.0 §10.2) */
   ipcMain.handle(IpcChannels.SearchEngineDetect, (_evt, connectionId: string) =>
     searchEngineDetect(connectionId)
   )
+}
+
+async function cancelExport(
+  req: ExportCancelRequest
+): Promise<ApiResponse<ExportCancelResult>> {
+  const jobId = req.jobId?.trim()
+  if (!jobId) {
+    return { success: false, error: { message: '无效的任务 ID' } }
+  }
+  if (isJobActive(jobId)) markCancelled(jobId)
+  return { success: true, data: { jobId, cancelled: isJobActive(jobId) } }
+}
+
+async function cancelImport(
+  req: ImportCancelRequest
+): Promise<ApiResponse<ImportCancelResult>> {
+  const jobId = req.jobId?.trim()
+  if (!jobId) {
+    return { success: false, error: { message: '无效的任务 ID' } }
+  }
+  if (isJobActive(jobId)) markCancelled(jobId)
+  return { success: true, data: { jobId, cancelled: isJobActive(jobId) } }
 }
 
 /** Open the OS save dialog and return the chosen file path. Returns

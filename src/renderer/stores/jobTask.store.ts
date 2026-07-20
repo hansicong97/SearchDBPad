@@ -27,10 +27,12 @@
  *     `onProgress` subscriptions unchanged.
  *   - Job metadata (target index, file path, output path, format)
  *     is registered by the calling panel via `registerImportTask` /
- *     `registerExportTask` BEFORE the IPC `execute` call. The
- *     progress events themselves only carry the `jobId` and the
- *     counters; the metadata is what makes the floating panel
- *     human-readable.
+ *     `registerExportTask`. Progress events themselves only carry
+ *     the `jobId` and counters; the metadata is what makes the
+ *     floating panel human-readable.
+ *   - V0.3.11 adds a renderer-only `cancelling` stage so the UI can
+ *     respond immediately after the user clicks Stop. The final
+ *     state still comes from main-process progress events.
  *   - The aggregator is best-effort: if a panel forgets to register
  *     the metadata, the task will still appear in the panel — the
  *     user just sees less context (jobId, type, stage, counters).
@@ -38,15 +40,18 @@
 
 import { create } from 'zustand'
 import type {
+  ApiResponse,
+  ExportCancelResult,
   ExportFormat,
+  ExportProgress,
+  ImportCancelResult,
   ImportFormat,
-  ImportProgress,
-  ExportProgress
+  ImportProgress
 } from '@shared/ipc'
 
 export type JobTaskKind = 'import' | 'export'
 
-export type JobTaskStage = 'queued' | 'running' | 'completed' | 'failed'
+export type JobTaskStage = 'queued' | 'running' | 'cancelling' | 'completed' | 'failed'
 
 export interface ImportJobMeta {
   connectionId: string
@@ -83,19 +88,18 @@ export interface JobTask {
   stage: JobTaskStage
 }
 
+type CancelTaskResponse = ApiResponse<ImportCancelResult | ExportCancelResult>
+
 interface JobTaskState {
   tasks: JobTask[]
+  /** Job ids the user explicitly removed from the floating list.
+   *  This is session-only and prevents late progress events from
+   *  recreating a removed running task. */
+  dismissedJobIds: Set<string>
 
   /* --- registration ---------------------------------------------- */
 
-  /** Register an import job's metadata BEFORE the IPC execute call.
-   *  The `jobId` is the one the main process will emit in progress
-   *  events. The caller is responsible for generating it (the
-   *  `runImport` workspace action does so on its side; the import
-   *  panel hands the returned `jobId` to the store immediately
-   *  after `runImport` resolves). */
   registerImportTask: (jobId: string, meta: ImportJobMeta) => void
-  /** Same as `registerImportTask` for exports. */
   registerExportTask: (jobId: string, meta: ExportJobMeta) => void
 
   /* --- progress ingestion ---------------------------------------- */
@@ -103,24 +107,38 @@ interface JobTaskState {
   upsertImportProgress: (p: ImportProgress) => void
   upsertExportProgress: (p: ExportProgress) => void
 
-  /* --- bookkeeping ----------------------------------------------- */
+  /* --- actions / bookkeeping ------------------------------------- */
 
-  /** Drop one job from the list (e.g. the user clicked the close
-   *  icon next to a finished task). */
+  cancelTask: (jobId: string) => Promise<CancelTaskResponse>
+  /** Drop one job from the list. Removing a running/cancelling task
+   *  also dismisses its jobId so later progress events do not make
+   *  it reappear. */
   removeTask: (jobId: string) => void
-  /** Drop every job that has reached a terminal stage. Running
-   *  jobs are kept. */
+  /** Drop every job that has reached a terminal stage. Running and
+   *  cancelling jobs are kept. */
   clearFinished: () => void
 }
 
-export const useJobTaskStore = create<JobTaskState>((set) => ({
+function taskStageFromProgress(
+  current: JobTask | undefined,
+  progressStage: 'completed' | 'failed' | string
+): JobTaskStage {
+  if (progressStage === 'completed') return 'completed'
+  if (progressStage === 'failed') return 'failed'
+  return current?.stage === 'cancelling' ? 'cancelling' : 'running'
+}
+
+function errorResponse(message: string): CancelTaskResponse {
+  return { success: false, error: { message } }
+}
+
+export const useJobTaskStore = create<JobTaskState>((set, get) => ({
   tasks: [],
+  dismissedJobIds: new Set(),
 
   registerImportTask: (jobId, meta) => {
     set((s) => {
-      // Defensive de-dup: if the jobId is already present (e.g. a
-      // rapid second submit), update the metadata in place rather
-      // than creating a duplicate entry.
+      if (s.dismissedJobIds.has(jobId)) return {}
       const existing = s.tasks.find((t) => t.jobId === jobId)
       if (existing) {
         return {
@@ -144,6 +162,7 @@ export const useJobTaskStore = create<JobTaskState>((set) => ({
 
   registerExportTask: (jobId, meta) => {
     set((s) => {
+      if (s.dismissedJobIds.has(jobId)) return {}
       const existing = s.tasks.find((t) => t.jobId === jobId)
       if (existing) {
         return {
@@ -167,16 +186,11 @@ export const useJobTaskStore = create<JobTaskState>((set) => ({
 
   upsertImportProgress: (p) => {
     set((s) => {
+      if (s.dismissedJobIds.has(p.jobId)) return {}
       const idx = s.tasks.findIndex((t) => t.jobId === p.jobId)
-      const stage: JobTaskStage =
-        p.stage === 'completed'
-          ? 'completed'
-          : p.stage === 'failed'
-            ? 'failed'
-            : 'running'
+      const cur = idx >= 0 ? s.tasks[idx] : undefined
+      const stage = taskStageFromProgress(cur, p.stage)
       if (idx === -1) {
-        // Progress event without prior registration — record a
-        // minimal task so the user still sees something.
         const next: JobTask = {
           jobId: p.jobId,
           kind: 'import',
@@ -186,9 +200,8 @@ export const useJobTaskStore = create<JobTaskState>((set) => ({
         }
         return { tasks: [next, ...s.tasks] }
       }
-      const cur = s.tasks[idx]
       const updated: JobTask = {
-        ...cur,
+        ...cur!,
         importProgress: p,
         stage
       }
@@ -200,13 +213,10 @@ export const useJobTaskStore = create<JobTaskState>((set) => ({
 
   upsertExportProgress: (p) => {
     set((s) => {
+      if (s.dismissedJobIds.has(p.jobId)) return {}
       const idx = s.tasks.findIndex((t) => t.jobId === p.jobId)
-      const stage: JobTaskStage =
-        p.stage === 'completed'
-          ? 'completed'
-          : p.stage === 'failed'
-            ? 'failed'
-            : 'running'
+      const cur = idx >= 0 ? s.tasks[idx] : undefined
+      const stage = taskStageFromProgress(cur, p.stage)
       if (idx === -1) {
         const next: JobTask = {
           jobId: p.jobId,
@@ -217,9 +227,8 @@ export const useJobTaskStore = create<JobTaskState>((set) => ({
         }
         return { tasks: [next, ...s.tasks] }
       }
-      const cur = s.tasks[idx]
       const updated: JobTask = {
-        ...cur,
+        ...cur!,
         exportProgress: p,
         stage
       }
@@ -229,23 +238,66 @@ export const useJobTaskStore = create<JobTaskState>((set) => ({
     })
   },
 
+  cancelTask: async (jobId) => {
+    const task = get().tasks.find((t) => t.jobId === jobId)
+    if (!task) return errorResponse('未找到任务')
+    if (task.stage === 'completed' || task.stage === 'failed') {
+      return { success: true, data: { jobId, cancelled: false } }
+    }
+
+    set((s) => ({
+      tasks: s.tasks.map((t) =>
+        t.jobId === jobId && t.stage !== 'completed' && t.stage !== 'failed'
+          ? { ...t, stage: 'cancelling' }
+          : t
+      )
+    }))
+
+    const res =
+      task.kind === 'import'
+        ? await window.esApi.importDocs.cancel({ jobId })
+        : await window.esApi.exportDocs.cancel({ jobId })
+
+    if (!res.success) {
+      set((s) => ({
+        tasks: s.tasks.map((t) =>
+          t.jobId === jobId && t.stage === 'cancelling'
+            ? { ...t, stage: 'running' }
+            : t
+        )
+      }))
+    }
+    return res
+  },
+
   removeTask: (jobId) => {
-    set((s) => ({ tasks: s.tasks.filter((t) => t.jobId !== jobId) }))
+    set((s) => {
+      const dismissedJobIds = new Set(s.dismissedJobIds)
+      dismissedJobIds.add(jobId)
+      return {
+        dismissedJobIds,
+        tasks: s.tasks.filter((t) => t.jobId !== jobId)
+      }
+    })
   },
 
   clearFinished: () => {
     set((s) => ({
-      tasks: s.tasks.filter((t) => t.stage === 'running')
+      tasks: s.tasks.filter((t) => selectIsJobRunning(t))
     }))
   }
 }))
 
 /* ------------------- selectors ------------------- */
 
+export function selectIsJobRunning(task: JobTask): boolean {
+  return task.stage === 'running' || task.stage === 'cancelling'
+}
+
 /** Number of jobs that are still in flight. Used to render the
  *  badge dot on the floating button. */
 export function selectRunningJobCount(s: JobTaskState): number {
   let n = 0
-  for (const t of s.tasks) if (t.stage === 'running') n += 1
+  for (const t of s.tasks) if (selectIsJobRunning(t)) n += 1
   return n
 }

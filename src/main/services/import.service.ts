@@ -18,6 +18,14 @@ import { promises as fs } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { resolveAdapterByConnectionId } from './searchEngine.service'
 import { sendImportProgress } from './jobProgress'
+import {
+  clearCancelled,
+  createCancelledError,
+  isCancelled,
+  isCancelledError,
+  markJobActive,
+  USER_STOPPED_MESSAGE
+} from './jobCancel.service'
 import type {
   ApiResponse,
   ImportExecuteRequest,
@@ -359,6 +367,11 @@ export async function runImport(
   // job threw on the first stage — that way the renderer can
   // close its loading state no matter where the error came from.
   const jobId = randomUUID()
+  let lastPercent: number | null = null
+  let lastTotal: number | null = null
+  let lastProcessed: number | null = null
+  let lastSuccess = 0
+  let lastFailed = 0
   const emit = (
     stage: 'reading' | 'parsing' | 'clearing' | 'writing' | 'completed' | 'failed',
     patch: {
@@ -370,38 +383,54 @@ export async function runImport(
       message?: string
     }
   ): void => {
+    lastPercent = patch.percent ?? null
+    lastTotal = patch.total ?? null
+    lastProcessed = patch.processed ?? null
+    lastSuccess = patch.success ?? 0
+    lastFailed = patch.failed ?? 0
     sendImportProgress({
       jobId,
       stage,
-      percent: patch.percent ?? null,
-      total: patch.total ?? null,
-      processed: patch.processed ?? null,
-      success: patch.success ?? 0,
-      failed: patch.failed ?? 0,
+      percent: lastPercent,
+      total: lastTotal,
+      processed: lastProcessed,
+      success: lastSuccess,
+      failed: lastFailed,
       message: patch.message
     })
   }
+  const throwIfCancelled = (): void => {
+    if (isCancelled(jobId)) throw createCancelledError()
+  }
+  markJobActive(jobId)
+
   try {
     emit('reading', { percent: null, total: null, processed: null })
+    throwIfCancelled()
 
     const resolvedFormat = resolveFormat(filePath, format)
     const parsed = await readAndParse(filePath, resolvedFormat)
+    throwIfCancelled()
     const total = parsed.rows.length
 
     emit('parsing', { percent: 100, total, processed: total })
+    throwIfCancelled()
 
     const { connection, adapter } = await resolveAdapterByConnectionId(
       connectionId
     )
+    throwIfCancelled()
 
     const adapterInput: ImportInput = {
       index,
       rows: parsed.rows.map((r) => ({ id: r.id, source: r.source })),
       mode,
+      isCancelled: () => isCancelled(jobId),
       // V0.3.7 B-3: forward batch-level success/failed counters
       // from the adapter so the renderer can update the progress
       // bar after each `_bulk` batch.
       onBatchProgress: ({ success, failed }) => {
+        throwIfCancelled()
         const processed = success + failed
         emit('writing', {
           percent: total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : null,
@@ -410,6 +439,7 @@ export async function runImport(
           success,
           failed
         })
+        throwIfCancelled()
       }
     }
 
@@ -417,14 +447,20 @@ export async function runImport(
     // `clearing` stage only fires for `replace` mode — it covers
     // the `_delete_by_query` round-trip the adapter makes first.
     if (mode === 'replace' && total > 0) {
+      throwIfCancelled()
       emit('clearing', { percent: 0, total, processed: 0 })
+      throwIfCancelled()
     }
     emit('writing', { percent: 0, total, processed: 0 })
+    throwIfCancelled()
 
     let result
     try {
       result = await adapter.importDocuments(connection, adapterInput)
     } catch (err) {
+      if (isCancelledError(err) || isCancelled(jobId)) {
+        throw createCancelledError()
+      }
       // In `replace` mode the adapter does the wipe before the bulk
       // call; we can't tell which step failed from the service side,
       // but the legacy SDK surfaced the same wording for the wipe
@@ -444,6 +480,7 @@ export async function runImport(
       }
       throw err
     }
+    throwIfCancelled()
 
     emit('completed', {
       percent: 100,
@@ -468,17 +505,22 @@ export async function runImport(
       }
     }
   } catch (err) {
-    const msg = errMsg(err)
+    const stopped = isCancelledError(err) || isCancelled(jobId)
+    const msg = stopped ? USER_STOPPED_MESSAGE : errMsg(err)
     emit('failed', {
-      percent: null,
-      total: null,
-      processed: null,
+      percent: stopped ? lastPercent : null,
+      total: stopped ? lastTotal : null,
+      processed: stopped ? lastProcessed : null,
+      success: stopped ? lastSuccess : 0,
+      failed: stopped ? lastFailed : 0,
       message: msg
     })
     return {
       success: false,
       error: { message: msg }
     }
+  } finally {
+    clearCancelled(jobId)
   }
 }
 

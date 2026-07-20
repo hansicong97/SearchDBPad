@@ -1,5 +1,5 @@
 /**
- * Floating button + task list (V0.3.10 F-5).
+ * Floating button + task list (V0.3.10 F-5 + V0.3.11 G-1/G-2/G-3).
  *
  * A right-bottom floating action button that opens a drawer listing
  * the current-session import / export jobs. Subscribes once to
@@ -14,15 +14,16 @@
  *     the whole session) so it survives connection / index /
  *     tab changes. The drawer therefore shows the live state of
  *     every job the renderer has ever heard of in this session.
- *   - The `JobTaskFloatButton` is read-only: it does not surface
- *     cancel / pause / retry buttons. Per the V0.3.10 plan those
- *     are explicitly out of scope.
+ *   - V0.3.11 surfaces cooperative Stop for running import/export
+ *     jobs. Pause / resume / retry and persistence remain out of
+ *     scope.
  *   - Tasks are not persisted: a hard refresh wipes the list,
  *     matching the plan's "no historical task browser" rule.
  */
 
 import { useEffect, useMemo, useState } from 'react'
 import {
+  App as AntdApp,
   Badge,
   Button,
   Drawer,
@@ -40,9 +41,11 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   ImportOutlined,
-  LoadingOutlined
+  LoadingOutlined,
+  StopOutlined
 } from '@ant-design/icons'
 import {
+  selectIsJobRunning,
   selectRunningJobCount,
   useJobTaskStore
 } from '../stores/jobTask.store'
@@ -90,6 +93,9 @@ function statusTag(stage: JobTaskStage): JSX.Element {
   if (stage === 'running') {
     return <Tag color="processing">运行中</Tag>
   }
+  if (stage === 'cancelling') {
+    return <Tag color="error" icon={<StopOutlined />}>停止中</Tag>
+  }
   if (stage === 'completed') {
     return <Tag color="success" icon={<CheckCircleOutlined />}>已完成</Tag>
   }
@@ -101,16 +107,19 @@ function statusTag(stage: JobTaskStage): JSX.Element {
 
 interface TaskRowProps {
   task: JobTask
-  onClose: (jobId: string) => void
+  onStop: (task: JobTask) => void
+  onRemove: (task: JobTask) => void
 }
 
-function TaskRow({ task, onClose }: TaskRowProps): JSX.Element {
+function TaskRow({ task, onStop, onRemove }: TaskRowProps): JSX.Element {
   const isImport = task.kind === 'import'
   const labelMap = isImport ? IMPORT_STAGE_LABEL : EXPORT_STAGE_LABEL
   const rawStage = isImport
     ? task.importProgress?.stage
     : task.exportProgress?.stage
-  const stageLabel = rawStage ? labelMap[rawStage] ?? rawStage : '排队中'
+  const stageLabel = task.stage === 'cancelling'
+    ? '停止中'
+    : rawStage ? labelMap[rawStage] ?? rawStage : '排队中'
   const percent = isImport
     ? task.importProgress?.percent ?? null
     : task.exportProgress?.percent ?? null
@@ -146,7 +155,7 @@ function TaskRow({ task, onClose }: TaskRowProps): JSX.Element {
     | 'exception'
     | 'active' = task.stage === 'completed'
     ? 'success'
-    : task.stage === 'failed'
+    : task.stage === 'failed' || task.stage === 'cancelling'
       ? 'exception'
       : percent !== null
         ? 'active'
@@ -170,15 +179,28 @@ function TaskRow({ task, onClose }: TaskRowProps): JSX.Element {
               #{shortJobId(task.jobId)}
             </Text>
           </Tooltip>
-          <Tag color="blue">{stageLabel}</Tag>
+          <Tag color={task.stage === 'cancelling' ? 'red' : 'blue'}>{stageLabel}</Tag>
           {statusTag(task.stage)}
           <div style={{ flex: 1 }} />
+          {task.stage === 'running' || task.stage === 'cancelling' ? (
+            <Tooltip title={task.stage === 'cancelling' ? '停止中' : '停止任务'}>
+              <Button
+                size="small"
+                type="text"
+                danger
+                icon={<StopOutlined />}
+                loading={task.stage === 'cancelling'}
+                disabled={task.stage === 'cancelling'}
+                onClick={() => onStop(task)}
+              />
+            </Tooltip>
+          ) : null}
           <Tooltip title="从列表中移除">
             <Button
               size="small"
               type="text"
               icon={<DeleteOutlined />}
-              onClick={() => onClose(task.jobId)}
+              onClick={() => onRemove(task)}
             />
           </Tooltip>
         </Space>
@@ -259,6 +281,7 @@ function TaskRow({ task, onClose }: TaskRowProps): JSX.Element {
 }
 
 export default function JobTaskFloatButton(): JSX.Element | null {
+  const { modal, message } = AntdApp.useApp()
   const [open, setOpen] = useState(false)
   const tasks = useJobTaskStore((s) => s.tasks)
   const runningCount = useJobTaskStore(selectRunningJobCount)
@@ -268,6 +291,7 @@ export default function JobTaskFloatButton(): JSX.Element | null {
   const upsertExportProgress = useJobTaskStore(
     (s) => s.upsertExportProgress
   )
+  const cancelTask = useJobTaskStore((s) => s.cancelTask)
   const removeTask = useJobTaskStore((s) => s.removeTask)
   const clearFinished = useJobTaskStore((s) => s.clearFinished)
 
@@ -291,6 +315,40 @@ export default function JobTaskFloatButton(): JSX.Element | null {
   const hasFinished = tasks.some(
     (t) => t.stage === 'completed' || t.stage === 'failed'
   )
+
+  const handleStop = async (task: JobTask): Promise<void> => {
+    const res = await cancelTask(task.jobId)
+    if (!res.success) {
+      message.error(res.error?.message ?? '停止任务失败')
+    }
+  }
+
+  const handleRemove = (task: JobTask): void => {
+    if (!selectIsJobRunning(task)) {
+      removeTask(task.jobId)
+      return
+    }
+
+    modal.confirm({
+      title: '确认移除并停止任务？',
+      content: '该任务仍在运行中，移除后将同时取消任务执行。',
+      okText: '取消并移除',
+      okButtonProps: { danger: true },
+      cancelText: '不移除',
+      onOk: async () => {
+        const current = useJobTaskStore
+          .getState()
+          .tasks.find((t) => t.jobId === task.jobId)
+        if (current && selectIsJobRunning(current)) {
+          const res = await useJobTaskStore.getState().cancelTask(task.jobId)
+          if (!res.success) {
+            message.error(res.error?.message ?? '停止任务失败')
+          }
+        }
+        useJobTaskStore.getState().removeTask(task.jobId)
+      }
+    })
+  }
 
   // We deliberately do not gate the FAB on `runningCount` — even
   // with zero in-flight jobs the user should be able to look at
@@ -354,7 +412,12 @@ export default function JobTaskFloatButton(): JSX.Element | null {
         ) : (
           <Space direction="vertical" size={10} style={{ width: '100%' }}>
             {tasks.map((task) => (
-              <TaskRow key={task.jobId} task={task} onClose={removeTask} />
+              <TaskRow
+                key={task.jobId}
+                task={task}
+                onStop={(t) => void handleStop(t)}
+                onRemove={handleRemove}
+              />
             ))}
           </Space>
         )}

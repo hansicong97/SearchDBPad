@@ -11,7 +11,7 @@
  * `ai-dev-steps/08_EXPORT.md` — scroll / search_after is out of scope).
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Alert,
   App as AntdApp,
@@ -29,7 +29,8 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   DownloadOutlined,
-  LoadingOutlined
+  LoadingOutlined,
+  StopOutlined
 } from '@ant-design/icons'
 import { useWorkspaceStore } from '../stores/workspace.store'
 import { useJobTaskStore } from '../stores/jobTask.store'
@@ -87,13 +88,33 @@ export default function ExportPanel(): JSX.Element {
   // V0.3.10 F-5: hand the export job to the global task store so
   // the floating panel can show its progress and result.
   const registerExportTask = useJobTaskStore((s) => s.registerExportTask)
+  const cancelTask = useJobTaskStore((s) => s.cancelTask)
+  const activeJobIdRef = useRef<string | null>(null)
+  const pendingMetaRef = useRef<{
+    connectionId: string
+    index: string
+    format: ExportFormat
+    outputPath: string
+  } | null>(null)
+  const [cancelRequested, setCancelRequested] = useState<boolean>(false)
 
   useEffect(() => {
     const unsubscribe = window.esApi.exportDocs.onProgress((p) => {
+      const activeJobId = activeJobIdRef.current
+      if (activeJobId && p.jobId !== activeJobId) return
+      if (!activeJobId && !exporting && !pendingMetaRef.current) return
+      if (!activeJobId && pendingMetaRef.current) {
+        activeJobIdRef.current = p.jobId
+        registerExportTask(p.jobId, pendingMetaRef.current)
+      }
+      if (p.stage === 'completed' || p.stage === 'failed') {
+        pendingMetaRef.current = null
+        setCancelRequested(false)
+      }
       setProgress(p)
     })
     return unsubscribe
-  }, [])
+  }, [exporting, registerExportTask])
 
   const ready = !!activeConnectionId && !!selectedIndex
 
@@ -105,6 +126,9 @@ export default function ExportPanel(): JSX.Element {
     // a new export so the bar doesn't briefly show numbers from
     // a previous run.
     setProgress(null)
+    setCancelRequested(false)
+    activeJobIdRef.current = null
+    pendingMetaRef.current = null
     setExporting(true)
     try {
       const pickRes = await window.esApi.exportDocs.pickSavePath({
@@ -118,6 +142,12 @@ export default function ExportPanel(): JSX.Element {
       if (pickRes.data.outputPath === null) {
         // User cancelled — silent no-op.
         return
+      }
+      pendingMetaRef.current = {
+        connectionId: activeConnectionId as string,
+        index: selectedIndex as string,
+        format,
+        outputPath: pickRes.data.outputPath
       }
       const execRes = await window.esApi.exportDocs.execute({
         connectionId: activeConnectionId as string,
@@ -149,7 +179,22 @@ export default function ExportPanel(): JSX.Element {
       const kb = (r.bytes / 1024).toFixed(1)
       message.success(`已导出 ${r.rows} 条到 ${r.outputPath} (${kb} KB)`)
     } finally {
+      pendingMetaRef.current = null
+      setCancelRequested(false)
       setExporting(false)
+    }
+  }
+
+  const handleCancelExport = async (): Promise<void> => {
+    if (!progress || progress.stage === 'completed' || progress.stage === 'failed') return
+    setCancelRequested(true)
+    const res = await cancelTask(progress.jobId)
+    if (!res.success) {
+      const fallback = await window.esApi.exportDocs.cancel({ jobId: progress.jobId })
+      if (!fallback.success) {
+        setCancelRequested(false)
+        message.error(fallback.error?.message ?? res.error?.message ?? '停止导出任务失败')
+      }
     }
   }
 
@@ -168,13 +213,17 @@ export default function ExportPanel(): JSX.Element {
       progress.stage === 'failed')
   const progressPercent = progress?.percent ?? 0
   const progressStatus: 'normal' | 'success' | 'exception' | 'active' =
-    progress?.stage === 'completed'
-      ? 'success'
-      : progress?.stage === 'failed'
-        ? 'exception'
-        : progress && progress.percent !== null
-          ? 'active'
-          : 'normal'
+    cancelRequested
+      ? 'exception'
+      : progress?.stage === 'completed'
+        ? 'success'
+        : progress?.stage === 'failed'
+          ? 'exception'
+          : progress && progress.percent !== null
+            ? 'active'
+            : 'normal'
+  const canCancelProgress =
+    !!progress && progress.stage !== 'completed' && progress.stage !== 'failed'
 
   return (
     <div style={{ maxWidth: 720 }}>
@@ -276,16 +325,33 @@ export default function ExportPanel(): JSX.Element {
           size="small"
           style={{ marginTop: 16 }}
           title={
-            <Space>
-              {progress.stage === 'completed' ? (
-                <CheckCircleOutlined style={{ color: '#52c41a' }} />
-              ) : progress.stage === 'failed' ? (
-                <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
-              ) : (
-                <LoadingOutlined />
-              )}
-              <Text>导出进度</Text>
-              <Tag color="blue">{STAGE_LABEL[progress.stage]}</Tag>
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Space>
+                {progress.stage === 'completed' ? (
+                  <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                ) : progress.stage === 'failed' ? (
+                  <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                ) : (
+                  <LoadingOutlined />
+                )}
+                <Text>导出进度</Text>
+                <Tag color={cancelRequested ? 'red' : 'blue'}>
+                  {cancelRequested ? '停止中' : STAGE_LABEL[progress.stage]}
+                </Tag>
+              </Space>
+              {canCancelProgress ? (
+                <Button
+                  size="small"
+                  danger
+                  type="text"
+                  icon={<StopOutlined />}
+                  loading={cancelRequested}
+                  disabled={cancelRequested}
+                  onClick={() => void handleCancelExport()}
+                >
+                  停止
+                </Button>
+              ) : null}
             </Space>
           }
         >

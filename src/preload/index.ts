@@ -34,11 +34,15 @@ import {
   type DocumentWriteResult,
   type EsConnection,
   type EsConnectionInput,
+  type ExportCancelRequest,
+  type ExportCancelResult,
   type ExportPickPathRequest,
   type ExportPickPathResult,
   type ExportProgress,
   type ExportRequest,
   type ExportResult,
+  type ImportCancelRequest,
+  type ImportCancelResult,
   type ImportExecuteRequest,
   type ImportExecuteResult,
   type ImportPickFileRequest,
@@ -289,6 +293,13 @@ const api = {
         IpcChannels.ExportExecute,
         req
       ) as Promise<ApiResponse<ExportResult>>,
+    cancel: (
+      req: ExportCancelRequest
+    ): Promise<ApiResponse<ExportCancelResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.ExportCancel,
+        req
+      ) as Promise<ApiResponse<ExportCancelResult>>,
     /** V0.3.7 B-3: subscribe to export progress events. Returns
      *  an unsubscribe function — callers should call it on
      *  unmount to avoid leaking listeners. */
@@ -324,6 +335,13 @@ const api = {
         IpcChannels.ImportExecute,
         req
       ) as Promise<ApiResponse<ImportExecuteResult>>,
+    cancel: (
+      req: ImportCancelRequest
+    ): Promise<ApiResponse<ImportCancelResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.ImportCancel,
+        req
+      ) as Promise<ApiResponse<ImportCancelResult>>,
     /** V0.3.7 B-3: subscribe to import progress events. Returns
      *  an unsubscribe function. */
     onProgress: (cb: (progress: ImportProgress) => void): (() => void) => {

@@ -16,7 +16,7 @@
  *     document browse page when the target index matches.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   App as AntdApp,
@@ -40,7 +40,8 @@ import {
   ExclamationCircleOutlined,
   FileTextOutlined,
   ImportOutlined,
-  LoadingOutlined
+  LoadingOutlined,
+  StopOutlined
 } from '@ant-design/icons'
 import { useWorkspaceStore } from '../stores/workspace.store'
 import { useJobTaskStore } from '../stores/jobTask.store'
@@ -102,9 +103,11 @@ export default function ImportPanel(): JSX.Element {
   const indexList = useWorkspaceStore((s) => s.indices)
   const runImport = useWorkspaceStore((s) => s.runImport)
   // V0.3.10 F-5: when we kick off an import we register the job in
-  // the global task store so the floating panel can show it. The
-  // `jobId` comes back from `runImport` in the result envelope.
+  // the global task store so the floating panel can show it. V0.3.11
+  // also registers on the first progress event, so stopped/failed jobs
+  // keep their metadata even when `runImport` returns a failure envelope.
   const registerImportTask = useJobTaskStore((s) => s.registerImportTask)
+  const cancelTask = useJobTaskStore((s) => s.cancelTask)
 
   const [targetIndex, setTargetIndex] = useState<string>(selectedIndex ?? '')
   const [pickedFile, setPickedFile] = useState<{
@@ -125,6 +128,14 @@ export default function ImportPanel(): JSX.Element {
   // previous job. The jobId on the latest event is matched against
   // the result we get back from `runImport` to drop stale events.
   const [progress, setProgress] = useState<ImportProgress | null>(null)
+  const [cancelRequested, setCancelRequested] = useState<boolean>(false)
+  const activeJobIdRef = useRef<string | null>(null)
+  const pendingMetaRef = useRef<{
+    connectionId: string
+    index: string
+    filePath: string
+    format: ImportFormat
+  } | null>(null)
 
   // Subscribe to import progress events. The callback is stable
   // across renders (we store the latest progress in state and
@@ -132,10 +143,21 @@ export default function ImportPanel(): JSX.Element {
   // for cleanup on unmount.
   useEffect(() => {
     const unsubscribe = window.esApi.importDocs.onProgress((p) => {
+      const activeJobId = activeJobIdRef.current
+      if (activeJobId && p.jobId !== activeJobId) return
+      if (!activeJobId && !importing && !pendingMetaRef.current) return
+      if (!activeJobId && pendingMetaRef.current) {
+        activeJobIdRef.current = p.jobId
+        registerImportTask(p.jobId, pendingMetaRef.current)
+      }
+      if (p.stage === 'completed' || p.stage === 'failed') {
+        pendingMetaRef.current = null
+        setCancelRequested(false)
+      }
       setProgress(p)
     })
     return unsubscribe
-  }, [])
+  }, [importing, registerImportTask])
 
   // Keep the target index in sync when the workspace's selected index
   // changes (e.g. user picks another index in the sidebar), unless the
@@ -158,6 +180,9 @@ export default function ImportPanel(): JSX.Element {
     setResult(null)
     setPreview(null)
     setPickedFile(null)
+    activeJobIdRef.current = null
+    pendingMetaRef.current = null
+    setCancelRequested(false)
     // V0.3.7 B-3: a new file means a new job — drop any leftover
     // progress from the previous one so the UI doesn't show
     // mid-run numbers for a job that hasn't started yet.
@@ -252,6 +277,14 @@ export default function ImportPanel(): JSX.Element {
     // so the UI doesn't show numbers from a previous import
     // until the first event for this run lands.
     setProgress(null)
+    setCancelRequested(false)
+    activeJobIdRef.current = null
+    pendingMetaRef.current = {
+      connectionId: activeConnectionId,
+      index: targetIndex,
+      filePath: pickedFile.filePath,
+      format
+    }
     try {
       const res = await runImport({
         connectionId: activeConnectionId,
@@ -287,7 +320,22 @@ export default function ImportPanel(): JSX.Element {
         message.warning(`部分导入：成功 ${r.success}，失败 ${r.failed}`)
       }
     } finally {
+      pendingMetaRef.current = null
+      setCancelRequested(false)
       setImporting(false)
+    }
+  }
+
+  const handleCancelImport = async (): Promise<void> => {
+    if (!progress || progress.stage === 'completed' || progress.stage === 'failed') return
+    setCancelRequested(true)
+    const res = await cancelTask(progress.jobId)
+    if (!res.success) {
+      const fallback = await window.esApi.importDocs.cancel({ jobId: progress.jobId })
+      if (!fallback.success) {
+        setCancelRequested(false)
+        message.error(fallback.error?.message ?? res.error?.message ?? '停止导入任务失败')
+      }
     }
   }
 
@@ -367,13 +415,17 @@ export default function ImportPanel(): JSX.Element {
       progress.stage === 'failed')
   const progressPercent = progress?.percent ?? 0
   const progressStatus: 'normal' | 'success' | 'exception' | 'active' =
-    progress?.stage === 'completed'
-      ? 'success'
-      : progress?.stage === 'failed'
-        ? 'exception'
-        : progress && progress.percent !== null
-          ? 'active'
-          : 'normal'
+    cancelRequested
+      ? 'exception'
+      : progress?.stage === 'completed'
+        ? 'success'
+        : progress?.stage === 'failed'
+          ? 'exception'
+          : progress && progress.percent !== null
+            ? 'active'
+            : 'normal'
+  const canCancelProgress =
+    !!progress && progress.stage !== 'completed' && progress.stage !== 'failed'
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -497,16 +549,33 @@ export default function ImportPanel(): JSX.Element {
         <Card
           size="small"
           title={
-            <Space>
-              {progress.stage === 'completed' ? (
-                <CheckCircleOutlined style={{ color: '#52c41a' }} />
-              ) : progress.stage === 'failed' ? (
-                <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
-              ) : (
-                <LoadingOutlined />
-              )}
-              <Text>导入进度</Text>
-              <Tag color="blue">{STAGE_LABEL[progress.stage]}</Tag>
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Space>
+                {progress.stage === 'completed' ? (
+                  <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                ) : progress.stage === 'failed' ? (
+                  <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                ) : (
+                  <LoadingOutlined />
+                )}
+                <Text>导入进度</Text>
+                <Tag color={cancelRequested ? 'red' : 'blue'}>
+                  {cancelRequested ? '停止中' : STAGE_LABEL[progress.stage]}
+                </Tag>
+              </Space>
+              {canCancelProgress ? (
+                <Button
+                  size="small"
+                  danger
+                  type="text"
+                  icon={<StopOutlined />}
+                  loading={cancelRequested}
+                  disabled={cancelRequested}
+                  onClick={() => void handleCancelImport()}
+                >
+                  停止
+                </Button>
+              ) : null}
             </Space>
           }
         >

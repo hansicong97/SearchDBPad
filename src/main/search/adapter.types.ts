@@ -110,6 +110,10 @@ export interface ImportInput {
   index: string
   rows: ImportRow[]
   mode: ImportMode
+  /** V0.3.11 G-1: cooperative cancellation checkpoint. Adapters call
+   *  this between safe units of work; they do not abort in-flight
+   *  network requests. */
+  isCancelled?: () => boolean
   /** V0.3.7 B-3: optional batch-level progress callback. The
    *  adapter invokes this after each `_bulk` batch with the
    *  cumulative success / failed counts. The service layer wraps
@@ -124,6 +128,8 @@ export interface ExportInput {
   /** Caller-clamped upper bound on how many hits to return. */
   maxRows: number
   query?: Record<string, unknown>
+  /** V0.3.11 G-2: cooperative cancellation checkpoint. */
+  isCancelled?: () => boolean
 }
 
 /* ----------------------------- Outputs ----------------------------- */
