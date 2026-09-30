@@ -38,6 +38,7 @@ import type {
   IndexCreateRequest,
   IndexCreateResult,
   IndexDeleteResult,
+  IndexMaintenanceResult,
   IndexTemplateGetResult,
   IndexTemplateListResult,
   IndexTemplateModifyResult,
@@ -269,6 +270,34 @@ export interface SearchEngineAdapter {
     indexName: string,
     mapping: Record<string, unknown>
   ): Promise<DeleteIndexResult>
+
+  /* ----------- V0.3.12: 索引维护 ----------- */
+
+  /** `POST /{index}/_refresh`，使最近写入对搜索可见。 */
+  refreshIndex(
+    connection: SearchConnection,
+    indexName: string
+  ): Promise<IndexMaintenanceResult>
+
+  /** `POST /{index}/_flush`，将内存 buffer 持久化到磁盘。 */
+  flushIndex(
+    connection: SearchConnection,
+    indexName: string
+  ): Promise<IndexMaintenanceResult>
+
+  /** `POST /{index}/_forcemerge`。`maxNumSegments` 为正整数时作为
+   *  `max_num_segments` 查询参数；省略则由引擎自行决定。 */
+  forceMergeIndex(
+    connection: SearchConnection,
+    indexName: string,
+    maxNumSegments?: number
+  ): Promise<IndexMaintenanceResult>
+
+  /** `POST /{index}/_cache/clear`，清除索引级 cache。 */
+  clearIndexCache(
+    connection: SearchConnection,
+    indexName: string
+  ): Promise<IndexMaintenanceResult>
 
   /* ----------- V0.3.4 A-4: alias management ----------- */
 

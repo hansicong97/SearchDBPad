@@ -57,6 +57,12 @@ export const IpcChannels = {
   IndexUpdateSettings: 'index:updateSettings',
   IndexUpdateMapping: 'index:updateMapping',
 
+  /* Index maintenance (V0.3.12) */
+  IndexRefresh: 'index:refresh',
+  IndexFlush: 'index:flush',
+  IndexForceMerge: 'index:forceMerge',
+  IndexClearCache: 'index:clearCache',
+
   /* Alias management (V0.3.4 A-4) */
   AliasList: 'alias:list',
   AliasAdd: 'alias:add',
@@ -349,6 +355,30 @@ export interface IndexUpdateMappingResult {
   connectionId: string
   index: string
   acknowledged: boolean
+}
+
+/* ------------------- Index maintenance (V0.3.12) ------------------- */
+
+/** `_refresh` / `_flush` / `_forcemerge` / `_cache/clear` 返回的分片计数。 */
+export interface IndexMaintenanceShards {
+  total: number
+  successful: number
+  failed: number
+}
+
+/** 四个维护操作共用的请求。`maxNumSegments` 只对 Force Merge 生效。 */
+export interface IndexMaintenanceRequest {
+  connectionId: string
+  index: string
+  maxNumSegments?: number
+}
+
+/** 维护操作结果。HTTP 成功时 `acknowledged` 为 true，并尽量带上 `_shards`。 */
+export interface IndexMaintenanceResult {
+  connectionId: string
+  index: string
+  acknowledged: boolean
+  shards?: IndexMaintenanceShards
 }
 
 /* ------------------- Alias management (V0.3.4 A-4) ------------------- */

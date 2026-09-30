@@ -28,7 +28,11 @@ import {
   closeIndex,
   openIndex,
   updateIndexSettings,
-  updateIndexMapping
+  updateIndexMapping,
+  refreshIndex,
+  flushIndex,
+  forceMergeIndex,
+  clearIndexCache
 } from './indexApi'
 import {
   listAliases,
@@ -79,6 +83,12 @@ export const elasticsearchAdapter: SearchEngineAdapter = {
   openIndex,
   updateIndexSettings,
   updateIndexMapping,
+
+  // V0.3.12: 索引维护。
+  refreshIndex,
+  flushIndex,
+  forceMergeIndex,
+  clearIndexCache,
 
   listAliases,
   addAlias,

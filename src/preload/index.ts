@@ -73,6 +73,8 @@ import {
   type IndexUpdateMappingResult,
   type IndexUpdateSettingsRequest,
   type IndexUpdateSettingsResult,
+  type IndexMaintenanceRequest,
+  type IndexMaintenanceResult,
   type ShardCancelRequest,
   type ShardListResult,
   type ShardRelocateRequest,
@@ -221,6 +223,38 @@ const api = {
         IpcChannels.IndexUpdateMapping,
         req
       ) as Promise<ApiResponse<IndexUpdateMappingResult>>,
+    /** V0.3.12: POST /{index}/_refresh */
+    refresh: (
+      req: IndexMaintenanceRequest
+    ): Promise<ApiResponse<IndexMaintenanceResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexRefresh,
+        req
+      ) as Promise<ApiResponse<IndexMaintenanceResult>>,
+    /** V0.3.12: POST /{index}/_flush */
+    flush: (
+      req: IndexMaintenanceRequest
+    ): Promise<ApiResponse<IndexMaintenanceResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexFlush,
+        req
+      ) as Promise<ApiResponse<IndexMaintenanceResult>>,
+    /** V0.3.12: POST /{index}/_forcemerge */
+    forceMerge: (
+      req: IndexMaintenanceRequest
+    ): Promise<ApiResponse<IndexMaintenanceResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexForceMerge,
+        req
+      ) as Promise<ApiResponse<IndexMaintenanceResult>>,
+    /** V0.3.12: POST /{index}/_cache/clear */
+    clearCache: (
+      req: IndexMaintenanceRequest
+    ): Promise<ApiResponse<IndexMaintenanceResult>> =>
+      ipcRenderer.invoke(
+        IpcChannels.IndexClearCache,
+        req
+      ) as Promise<ApiResponse<IndexMaintenanceResult>>,
     /** V0.3.9 E-7: list shards for a single index. */
     shards: (
       req: IndexDetailRequest

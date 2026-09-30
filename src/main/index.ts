@@ -53,6 +53,10 @@ import {
   openIndex,
   updateIndexMapping,
   updateIndexSettings,
+  refreshIndex,
+  flushIndex,
+  forceMergeIndex,
+  clearIndexCache,
   getIndexShards,
   relocateShard,
   cancelShardAllocation
@@ -208,6 +212,16 @@ function registerIpcHandlers(): void {
   /* Index mapping (V0.3.3 A-3) */
   ipcMain.handle(IpcChannels.IndexUpdateMapping, (_evt, req) =>
     updateIndexMapping(req)
+  )
+
+  /* Index maintenance (V0.3.12) */
+  ipcMain.handle(IpcChannels.IndexRefresh, (_evt, req) => refreshIndex(req))
+  ipcMain.handle(IpcChannels.IndexFlush, (_evt, req) => flushIndex(req))
+  ipcMain.handle(IpcChannels.IndexForceMerge, (_evt, req) =>
+    forceMergeIndex(req)
+  )
+  ipcMain.handle(IpcChannels.IndexClearCache, (_evt, req) =>
+    clearIndexCache(req)
   )
 
   /* Shard management (V0.3.9 E-7) */

@@ -29,14 +29,16 @@ import type {
   IndexUpdateMappingResult,
   IndexUpdateSettingsRequest,
   IndexUpdateSettingsResult,
+  IndexMaintenanceRequest,
+  IndexMaintenanceResult,
   ShardCancelRequest,
   ShardInfo,
   ShardListResult,
   ShardRelocateRequest,
   ShardRerouteResult
 } from '../../shared/ipc'
-import type { SearchIndexInfo } from '../../shared/searchEngine'
-import type { CreateIndexInput } from '../search/adapter.types'
+import type { SearchConnection, SearchIndexInfo } from '../../shared/searchEngine'
+import type { CreateIndexInput, SearchEngineAdapter } from '../search/adapter.types'
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -268,6 +270,61 @@ export async function updateIndexMapping(
       error: { message: describeIndexError(err, req.index) }
     }
   }
+}
+
+/* ------------------- V0.3.12: 索引维护 ------------------- */
+
+async function runIndexMaintenance(
+  req: IndexMaintenanceRequest,
+  invoke: (
+    adapter: SearchEngineAdapter,
+    connection: SearchConnection
+  ) => Promise<IndexMaintenanceResult>
+): Promise<ApiResponse<IndexMaintenanceResult>> {
+  try {
+    const { connection, adapter } = await resolveAdapterByConnectionId(
+      req.connectionId
+    )
+    const data = await invoke(adapter, connection)
+    return { success: true, data }
+  } catch (err) {
+    return {
+      success: false,
+      error: { message: describeIndexError(err, req.index) }
+    }
+  }
+}
+
+export function refreshIndex(
+  req: IndexMaintenanceRequest
+): Promise<ApiResponse<IndexMaintenanceResult>> {
+  return runIndexMaintenance(req, (adapter, connection) =>
+    adapter.refreshIndex(connection, req.index)
+  )
+}
+
+export function flushIndex(
+  req: IndexMaintenanceRequest
+): Promise<ApiResponse<IndexMaintenanceResult>> {
+  return runIndexMaintenance(req, (adapter, connection) =>
+    adapter.flushIndex(connection, req.index)
+  )
+}
+
+export function forceMergeIndex(
+  req: IndexMaintenanceRequest
+): Promise<ApiResponse<IndexMaintenanceResult>> {
+  return runIndexMaintenance(req, (adapter, connection) =>
+    adapter.forceMergeIndex(connection, req.index, req.maxNumSegments)
+  )
+}
+
+export function clearIndexCache(
+  req: IndexMaintenanceRequest
+): Promise<ApiResponse<IndexMaintenanceResult>> {
+  return runIndexMaintenance(req, (adapter, connection) =>
+    adapter.clearIndexCache(connection, req.index)
+  )
 }
 
 /* ------------------- V0.3.9 E-7: shard management ------------------- */

@@ -28,6 +28,7 @@ import type {
   CreateIndexResult,
   DeleteIndexResult
 } from '../../search/adapter.types'
+import type { IndexMaintenanceResult } from '../../../shared/ipc'
 
 interface CatIndexRow {
   health?: string
@@ -246,4 +247,95 @@ export async function updateIndexMapping(
     index: indexName,
     acknowledged: true
   }
+}
+
+/* ------------------- V0.3.12: 索引维护 ------------------- */
+
+/** Force Merge 可能持续数分钟，默认 30 秒 HTTP 超时拿不到 `_shards`。 */
+const FORCE_MERGE_TIMEOUT_MS = 10 * 60 * 1000
+
+interface EsMaintenanceResponse {
+  _shards?: {
+    total?: number
+    successful?: number
+    failed?: number
+  }
+}
+
+function toMaintenanceResult(
+  connection: SearchConnection,
+  indexName: string,
+  body: EsMaintenanceResponse | undefined
+): IndexMaintenanceResult {
+  const raw = body?._shards
+  const shards =
+    raw &&
+    typeof raw.total === 'number' &&
+    typeof raw.successful === 'number' &&
+    typeof raw.failed === 'number'
+      ? {
+          total: raw.total,
+          successful: raw.successful,
+          failed: raw.failed
+        }
+      : undefined
+  return {
+    connectionId: connection.id,
+    index: indexName,
+    acknowledged: true,
+    shards
+  }
+}
+
+export async function refreshIndex(
+  connection: SearchConnection,
+  indexName: string
+): Promise<IndexMaintenanceResult> {
+  const body = await elasticsearchRequest<EsMaintenanceResponse>(connection, {
+    method: 'POST',
+    path: `/${indexName}/_refresh`
+  })
+  return toMaintenanceResult(connection, indexName, body)
+}
+
+export async function flushIndex(
+  connection: SearchConnection,
+  indexName: string
+): Promise<IndexMaintenanceResult> {
+  const body = await elasticsearchRequest<EsMaintenanceResponse>(connection, {
+    method: 'POST',
+    path: `/${indexName}/_flush`
+  })
+  return toMaintenanceResult(connection, indexName, body)
+}
+
+export async function forceMergeIndex(
+  connection: SearchConnection,
+  indexName: string,
+  maxNumSegments?: number
+): Promise<IndexMaintenanceResult> {
+  const query =
+    typeof maxNumSegments === 'number' &&
+    Number.isInteger(maxNumSegments) &&
+    maxNumSegments > 0
+      ? { max_num_segments: maxNumSegments }
+      : undefined
+  const body = await elasticsearchRequest<EsMaintenanceResponse>(connection, {
+    method: 'POST',
+    path: `/${indexName}/_forcemerge`,
+    query,
+    timeoutMs: FORCE_MERGE_TIMEOUT_MS
+  })
+  return toMaintenanceResult(connection, indexName, body)
+}
+
+export async function clearIndexCache(
+  connection: SearchConnection,
+  indexName: string
+): Promise<IndexMaintenanceResult> {
+  const body = await elasticsearchRequest<EsMaintenanceResponse>(connection, {
+    method: 'POST',
+    path: `/${indexName}/_cache/clear`
+  })
+  return toMaintenanceResult(connection, indexName, body)
 }

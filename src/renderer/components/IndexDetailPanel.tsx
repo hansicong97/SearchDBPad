@@ -56,6 +56,7 @@ import DslQueryPanel from './DslQueryPanel'
 import ExportPanel from './ExportPanel'
 import FieldListPanel from './FieldListPanel'
 import ImportPanel from './ImportPanel'
+import IndexMaintenancePanel from './IndexMaintenancePanel'
 import JsonView from './JsonView'
 import MappingEditorModal from './MappingEditorModal'
 import MappingTree from './MappingTree'
@@ -80,6 +81,7 @@ type TabKey =
   | 'settings'
   | 'alias'
   | 'shards'
+  | 'maintenance'
   | 'export'
   | 'import'
 
@@ -192,7 +194,8 @@ export default function IndexDetailPanel({
           disabled={
             activeTab === 'query' ||
             activeTab === 'simple' ||
-            activeTab === 'export'
+            activeTab === 'export' ||
+            activeTab === 'maintenance'
           }
         >
           刷新
@@ -334,6 +337,17 @@ export default function IndexDetailPanel({
             children: (
               <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
                 <ShardPanel indexName={indexName} />
+              </div>
+            )
+          },
+          {
+            // V0.3.12: Refresh / Flush / Force Merge / Clear Cache。
+            // 本 tab 没有可刷新的只读数据，头部刷新按钮保持禁用。
+            key: 'maintenance',
+            label: '维护',
+            children: (
+              <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+                <IndexMaintenancePanel indexName={indexName} />
               </div>
             )
           },
