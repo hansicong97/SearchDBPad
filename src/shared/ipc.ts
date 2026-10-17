@@ -7,16 +7,20 @@
  * mapping/settings; phase 5 adds document search; phase 7 adds
  * document create / update / delete.
  *
- * V0.3.0 adds generic search-engine type aliases (`EsConnection`,
- * `EsAuthType`) sourced from `shared/searchEngine`. The shape is
- * unchanged for now; this is purely a naming refactor that opens the
- * door for future engines (Solr / OpenSearch / …) to plug in without
- * another breaking IPC rewrite.
+ * Canonical IPC contracts are engine-neutral. Legacy `Es*` aliases remain
+ * exported for source compatibility during the 0.4.x migration; new code
+ * should use the generic names.
  */
 
 import type {
   SearchAuthType,
-  SearchConnection
+  SearchConnection,
+  SearchQueryInput,
+  SearchEngineCapabilities,
+  SearchEngineManifest,
+  SearchEngineType,
+  SearchResourceInfo,
+  SearchQueryLanguage
 } from './searchEngine'
 
 /* ------------------------------------------------------------------ */
@@ -111,8 +115,17 @@ export const IpcChannels = {
   ImportProgressEvent: 'import:progress',
   ExportProgressEvent: 'export:progress',
 
-  /* Search engine metadata (V0.3.0 §10.2) */
-  SearchEngineDetect: 'search-engine:detect'
+  /* Search engine metadata and the V0.4.0 capability baseline */
+  SearchEngineDetect: 'search-engine:detect',
+  SearchEngineList: 'search-engine:list',
+  SearchEngineCapabilities: 'search-engine:capabilities',
+  ResourceList: 'resource:list',
+  ResourceSchema: 'resource:schema',
+  ResourceQuery: 'resource:query',
+  RequestCancel: 'request:cancel',
+  TaskExecute: 'task:execute',
+  TaskStatus: 'task:status',
+  TaskCancel: 'task:cancel'
 } as const
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels]
@@ -132,27 +145,30 @@ export interface AppPlatformResult {
 
 /* ------------------- Connection types (phase 2) ------------------- */
 
-/** Authentication type supported by an Elasticsearch endpoint. Aliased
- *  to `SearchAuthType` so future adapters can extend the union without
- *  touching this name. */
+/** Deprecated compatibility alias for the engine-neutral auth type. */
 export type EsAuthType = SearchAuthType
 
-/** A persisted Elasticsearch connection entry. Aliased to
- *  `SearchConnection`; the new `engineType` field is filled in by the
- *  connection service on every write and backfilled on read for
- *  pre-V0.3.0 entries. */
-export type EsConnection = SearchConnection
-
-/** Payload accepted by `connection:create` / `connection:update`. */
-export interface EsConnectionInput {
+/** Generic connection input. `engineType` remains optional while older
+ *  renderer callers and saved Elasticsearch connections migrate. */
+export interface SearchConnectionInput {
   id?: string
   name: string
+  engineType?: SearchEngineType
   url: string
-  authType: EsAuthType
+  authType: SearchAuthType
   username?: string
   password?: string
   folderId?: string | null
 }
+
+/** Deprecated compatibility alias for `SearchConnection`. */
+export type EsConnection = SearchConnection
+
+/** Deprecated compatibility alias for `SearchConnectionInput`. */
+export type EsConnectionInput = SearchConnectionInput
+export type { SearchConnection, SearchResourceInfo, SearchEngineCapabilities, SearchEngineManifest } from './searchEngine'
+
+/** Generic names are the canonical API for new engine integrations. */
 
 /** A user-defined folder for grouping connections in the sidebar.
  *  V0.3.9 E-4: folders may nest via `parentId`. `null` / `undefined`
@@ -231,6 +247,22 @@ export interface IndexListResult {
   connectionId: string
   indices: EsIndexInfo[]
   indexCount: number
+}
+
+export interface SearchResourceListResult {
+  connectionId: string
+  resources: SearchResourceInfo[]
+  resourceCount: number
+}
+
+export interface SearchEngineManifestListResult {
+  manifests: SearchEngineManifest[]
+}
+
+export interface SearchEngineCapabilitiesResult {
+  connectionId: string
+  engineType: SearchEngineType
+  capabilities: SearchEngineCapabilities
 }
 
 /** Common payload for cluster / index calls: just the connection to target. */
@@ -483,16 +515,17 @@ export interface IndexTemplateDeleteRequest {
 export interface DocumentSearchRequest {
   connectionId: string
   index: string
+  /**
+   * Optional for compatibility with the pre-0.4.0 IPC shape.
+   * The main process selects `elasticsearch-dsl` for Elasticsearch and
+   * `solr` for Solr when callers omit this field.
+   */
+  queryLanguage?: SearchQueryLanguage
   query: Record<string, unknown>
 }
 
-/** A single hit as returned by Elasticsearch. */
-export interface DocumentHit {
-  _id: string
-  _index: string
-  _score: number | null
-  _source: Record<string, unknown> | null
-}
+/** Compatibility alias for the engine-neutral document-hit shape. */
+export type DocumentHit = import('./searchEngine').SearchDocumentHit
 
 /** Result of `document:search`. The `raw` field carries the full ES
  *  response so the DSL tab can show a raw-response view. */
@@ -517,11 +550,12 @@ export interface DocumentSearchResult {
  *  optional for create (omitted → `POST /{index}/_doc`, ES auto-generates
  *  one); required for update. */
 export interface DocumentWriteRequest {
+  commitPolicy?: import('./searchEngine').CommitPolicy
   connectionId: string
   index: string
   /** Required for update, optional for create. */
   id?: string
-  /** The new `_source` body. */
+  /** The document fields body. Elasticsearch still serializes this as `_source`. */
   source: Record<string, unknown>
 }
 
@@ -538,6 +572,7 @@ export interface DocumentWriteResult {
 
 /** Payload for `document:delete`. */
 export interface DocumentDeleteRequest {
+  commitPolicy?: import('./searchEngine').CommitPolicy
   connectionId: string
   index: string
   id: string
@@ -561,6 +596,7 @@ export type ExportFormat = 'json' | 'ndjson' | 'csv'
  *  `match_all` if `query` is omitted), converts them to the chosen
  *  format, writes the file, and returns the path + row count. */
 export interface ExportRequest {
+  queryLanguage?: import('./searchEngine').SearchQueryLanguage
   connectionId: string
   index: string
   format: ExportFormat
@@ -656,6 +692,9 @@ export interface ImportPickFileResult {
  *  (e.g. "looks like NDJSON but extension is .json"). The renderer uses
  *  this to populate the preview table. */
 export interface ImportPreviewRequest {
+  /** Select the adapter's native document format, matching execution. Omitted
+   * by older callers defaults to Elasticsearch document envelopes. */
+  connectionId?: string
   filePath: string
   format: ImportFormat
   maxRows: number
@@ -689,6 +728,7 @@ export interface ImportPreviewResult {
  *  is not dropped. `format='auto'` is resolved from the file extension
  *  on the main side. */
 export interface ImportExecuteRequest {
+  commitPolicy?: import('./searchEngine').CommitPolicy
   connectionId: string
   index: string
   filePath: string
@@ -701,7 +741,7 @@ export interface ImportFailure {
   line: number
   /** Optional `_id` from the row, if known. */
   id?: string
-  /** ES error reason from the Bulk response. */
+  /** Safe actionable failure message; never a raw server error reason. */
   error: string
   /** Original raw text, truncated to 500 chars for display. */
   raw?: string
@@ -744,6 +784,7 @@ export type ImportStage =
   | 'clearing' /* `_delete_by_query` (replace mode only) */
   | 'writing' /* `POST /_bulk` batches */
   | 'completed' /* job finished successfully */
+  | 'cancelled' /* stopped by the user */
   | 'failed' /* job aborted with an error */
 
 /** A single progress update for an import job. Pushed from the
@@ -777,6 +818,7 @@ export type ExportStage =
   | 'querying' /* `POST /{index}/_search` to fetch hits */
   | 'writing' /* serialize + write to disk */
   | 'completed'
+  | 'cancelled'
   | 'failed'
 
 /** A single progress update for an export job. Pushed from the main
@@ -898,5 +940,15 @@ export interface ApiResponse<T> {
   error?: {
     message: string
     detail?: unknown
+    code?: string
+    operation?: string
   }
 }
+
+export interface ResourceRequest { connectionId: string; resourceName: string; requestSeq?: number }
+export interface SearchQueryRequest extends Omit<SearchQueryInput, 'signal'> { connectionId: string }
+export interface RequestCancelRequest { connectionId: string; resourceName?: string; requestSeq: number }
+export type TaskOperation = 'reindex' | 'updateByQuery' | 'deleteByQuery'
+export interface EngineTaskRequest { connectionId: string; resourceName: string; operation: TaskOperation; body: Record<string, unknown> }
+export interface EngineTaskRef { connectionId: string; taskId: string }
+export interface EngineTaskResult { connectionId: string; taskId: string; completed: boolean; cancelled?: boolean; response?: unknown; error?: string }

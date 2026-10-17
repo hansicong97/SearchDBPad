@@ -28,6 +28,7 @@ import type {
   SearchEngineServerInfo
 } from '../../shared/searchEngine'
 import type { SearchEngineAdapter } from '../search/adapter.types'
+import { toPublicSearchError } from '../search/errors'
 
 export async function resolveAdapterByConnectionId(
   connectionId: string
@@ -38,10 +39,6 @@ export async function resolveAdapterByConnectionId(
   const connection = resolveConnection(connectionId)
   const adapter = await getSearchEngineAdapter(connection.engineType)
   return { connection, adapter }
-}
-
-function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
 }
 
 /** V0.3.0 §10.2 — explicit `GET /` probe. Always issues the request
@@ -58,7 +55,7 @@ export async function searchEngineDetect(
   } catch (err) {
     return {
       success: false,
-      error: { message: errMsg(err) }
+      error: toPublicSearchError(err, 'search-engine.detect')
     }
   }
 }

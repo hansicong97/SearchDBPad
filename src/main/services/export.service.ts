@@ -1,256 +1,159 @@
-/**
- * Export service.
- *
- * V0.3.0: the adapter handles `POST /_search` and returns engine-native
- *  hits. Format serialization (JSON / NDJSON / CSV) and file write
- *  stay here — per spec §9.5, different engines can share file IO
- *  but writing semantics differ.
- */
-
-import { promises as fs } from 'node:fs'
+import { promises as fs, createReadStream } from 'node:fs'
+import type { FileHandle } from 'node:fs/promises'
+import { createInterface } from 'node:readline'
+import { finished } from 'node:stream/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { resolveAdapterByConnectionId } from './searchEngine.service'
 import { sendExportProgress } from './jobProgress'
-import {
-  clearCancelled,
-  createCancelledError,
-  isCancelled,
-  isCancelledError,
-  markJobActive,
-  USER_STOPPED_MESSAGE
-} from './jobCancel.service'
-import type {
-  ApiResponse,
-  DocumentHit,
-  ExportFormat,
-  ExportRequest,
-  ExportResult
-} from '../../shared/ipc'
+import { clearCancelled, createCancelledError, getJobSignal, isCancelled, isCancelledError, markJobActive, USER_STOPPED_MESSAGE } from './jobCancel.service'
+import { runWithRequestContext } from '../search/requestContext'
+import { requireOperation } from '../search/adapter.types'
+import type { ApiResponse, DocumentHit, ExportRequest, ExportResult, ExportProgress } from '../../shared/ipc'
 import { MAX_EXPORT_ROWS } from '../../shared/ipc'
 import type { ExportInput } from '../search/adapter.types'
+import { SearchEngineError, toPublicSearchError } from '../search/errors'
+import { isExportFormat, isUsableExportPath } from './exportPath'
 
-function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
+function exportError(error: unknown, operation: string) {
+  if (error instanceof TypeError && error.message === '导出数量必须大于 0') {
+    return { code: 'invalid_request', operation, message: '导出数量必须大于 0' }
+  }
+  return toPublicSearchError(error, operation)
 }
 
-function describeExportError(err: unknown, index: string): string {
-  if (err && typeof err === 'object' && 'status' in err) {
-    const status = (err as { status?: number }).status
-    if (status === 404) return `索引 "${index}" 不存在`
-    if (status === 400) return `DSL 无效或索引名非法: ${index}`
-  }
-  return errMsg(err)
+function csvEscape(value: unknown): string {
+  const raw = value === null || value === undefined ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value)
+  return /[",\r\n]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw
 }
 
-/** Build a JSON-safe value for CSV cells. Objects/arrays become their
- *  JSON representation; everything else is coerced to string. We never
- *  emit `undefined` or functions — both would corrupt the file. */
-function csvCell(value: unknown): string {
-  if (value === null || value === undefined) return ''
-  if (typeof value === 'object') {
-    try {
-      return JSON.stringify(value)
-    } catch {
-      return String(value)
-    }
-  }
-  return String(value)
-}
-
-/** CSV escape: wrap in double quotes when the cell contains a quote,
- *  comma, newline, or carriage return. Embedded quotes are doubled. */
-function csvEscape(raw: string): string {
-  if (/[",\r\n]/.test(raw)) {
-    return `"${raw.replace(/"/g, '""')}"`
-  }
-  return raw
-}
-
-/** Convert an array of hits to one of the supported formats. Returns the
- *  serialized string (UTF-8) ready to write. */
-function formatHits(
-  hits: DocumentHit[],
-  format: ExportFormat,
-  index: string
-): string {
-  if (format === 'json') {
-    // Per spec: array of `{ _id, _source }`. Pretty-printed for
-    // human-readable output; the file is meant for round-tripping
-    // through phase 9's JSON import path.
-    return (
-      JSON.stringify(
-        hits.map((h) => ({ _id: h._id, _source: h._source })),
-        null,
-        2
-      ) + '\n'
-    )
-  }
-  if (format === 'ndjson') {
-    // Bulk-API-compatible: alternating action line + source line, no
-    // surrounding array, no commas, no trailing newline at EOF (the
-    // last newline is fine — Bulk readers tolerate it).
-    const lines: string[] = []
-    for (const h of hits) {
-      lines.push(JSON.stringify({ index: { _index: index, _id: h._id } }))
-      lines.push(JSON.stringify(h._source ?? {}))
-    }
-    return lines.length > 0 ? lines.join('\n') + '\n' : ''
-  }
-  // csv
-  return formatCsv(hits)
-}
-
-/** CSV: union of all top-level keys across every `_source`, sorted
- *  alphabetically for stable output. `_id` is added as the first column.
- *  Nested objects / arrays are JSON-stringified. UTF-8 BOM is prepended
- *  in `runExport` (file write layer). */
-function formatCsv(hits: DocumentHit[]): string {
-  const keySet = new Set<string>()
-  for (const h of hits) {
-    if (h._source && typeof h._source === 'object') {
-      for (const k of Object.keys(h._source)) keySet.add(k)
-    }
-  }
-  const keys = Array.from(keySet).sort()
-  const headers = ['_id', ...keys]
-  const headerLine = headers.map(csvEscape).join(',')
-  const lines: string[] = [headerLine]
-  for (const h of hits) {
-    const row: string[] = [csvEscape(h._id)]
-    for (const k of keys) {
-      const v =
-        h._source && typeof h._source === 'object' ? h._source[k] : undefined
-      row.push(csvEscape(csvCell(v)))
-    }
-    lines.push(row.join(','))
-  }
-  return lines.join('\r\n') + '\r\n'
-}
-
-export async function runExport(
-  req: ExportRequest
-): Promise<ApiResponse<ExportResult>> {
-  const { connectionId, index, format, outputPath, query } = req
-  const requested = req.maxRows
-  if (!Number.isFinite(requested) || requested <= 0) {
+export async function runExport(req: ExportRequest): Promise<ApiResponse<ExportResult>> {
+  if (!req || typeof req !== 'object' || !isExportFormat(req.format) ||
+      typeof req.connectionId !== 'string' || !req.connectionId.trim() ||
+      typeof req.index !== 'string' || !req.index.trim() ||
+      !isUsableExportPath(req.outputPath) ||
+      !Number.isFinite(req.maxRows) || req.maxRows <= 0) {
     return {
       success: false,
-      error: { message: '导出数量必须大于 0' }
-    }
-  }
-  const maxRows = Math.min(Math.floor(requested), MAX_EXPORT_ROWS)
-
-  // V0.3.7 B-3: emit progress through the lifecycle. We always
-  // fire a terminal `completed` or `failed` event so the renderer
-  // can close its loading state even when an early validation
-  // fails. The renderer correlates by `jobId`.
-  const jobId = randomUUID()
-  let lastPercent: number | null = null
-  let lastTotal: number | null = null
-  let lastBytes: number | null = null
-  const emit = (
-    stage: 'querying' | 'writing' | 'completed' | 'failed',
-    patch: {
-      percent?: number | null
-      total?: number | null
-      bytes?: number | null
-      message?: string
-    }
-  ): void => {
-    lastPercent = patch.percent ?? null
-    lastTotal = patch.total ?? null
-    lastBytes = patch.bytes ?? null
-    sendExportProgress({
-      jobId,
-      stage,
-      percent: lastPercent,
-      total: lastTotal,
-      bytes: lastBytes,
-      message: patch.message
-    })
-  }
-  const throwIfCancelled = (): void => {
-    if (isCancelled(jobId)) throw createCancelledError()
-  }
-  markJobActive(jobId)
-
-  try {
-    emit('querying', { percent: null, total: null, bytes: null })
-    throwIfCancelled()
-
-    const { connection, adapter } = await resolveAdapterByConnectionId(
-      connectionId
-    )
-    throwIfCancelled()
-
-    const adapterInput: ExportInput = {
-      index,
-      maxRows,
-      query,
-      isCancelled: () => isCancelled(jobId)
-    }
-    const result = await adapter.exportDocuments(connection, adapterInput)
-    throwIfCancelled()
-
-    emit('writing', {
-      percent: 50,
-      total: result.hits.length,
-      bytes: 0
-    })
-    throwIfCancelled()
-
-    let payload = formatHits(result.hits, format, index)
-    throwIfCancelled()
-    // CSV only: prepend UTF-8 BOM so Excel auto-detects encoding and
-    // does not garble Chinese (and other non-ASCII) text.
-    if (format === 'csv' && payload.length > 0) {
-      payload = '﻿' + payload
-    }
-    throwIfCancelled()
-
-    // Make sure the parent directory exists — `showSaveDialog` should
-    // give us a writable path, but a custom prompt could pick anything.
-    await fs.mkdir(path.dirname(outputPath), { recursive: true })
-    throwIfCancelled()
-    await fs.writeFile(outputPath, payload, 'utf8')
-    throwIfCancelled()
-    const stat = await fs.stat(outputPath)
-    throwIfCancelled()
-
-    emit('completed', {
-      percent: 100,
-      total: result.hits.length,
-      bytes: stat.size,
-      message: `已导出 ${result.hits.length} 条 (${(stat.size / 1024).toFixed(1)} KB)`
-    })
-
-    return {
-      success: true,
-      data: {
-        jobId,
-        connectionId,
-        index,
-        format,
-        outputPath,
-        rows: result.hits.length,
-        bytes: stat.size
+      error: {
+        code: 'invalid_request',
+        operation: 'export:run',
+        message: '请求参数无效，请检查输入'
       }
     }
-  } catch (err) {
-    const stopped = isCancelledError(err) || isCancelled(jobId)
-    const message = stopped ? USER_STOPPED_MESSAGE : describeExportError(err, index)
-    emit('failed', {
-      percent: stopped ? lastPercent : null,
-      total: stopped ? lastTotal : null,
-      bytes: stopped ? lastBytes : null,
-      message
+  }
+  const jobId = randomUUID()
+  const temporaryPath = path.join(path.dirname(req.outputPath), `.${path.basename(req.outputPath)}.${jobId}.part`)
+  const spoolPath = `${temporaryPath}.rows`
+  let output: FileHandle | undefined
+  let spool: FileHandle | undefined
+  let terminal = false
+  let rows = 0
+  let bytes = 0
+  markJobActive(jobId)
+  const signal = getJobSignal(jobId)!
+  const check = (): void => { if (signal.aborted) throw createCancelledError() }
+  const emit = (stage: ExportProgress['stage'], message?: string): void => {
+    if (terminal) return
+    terminal = stage === 'completed' || stage === 'cancelled' || stage === 'failed'
+    sendExportProgress({ jobId, stage, percent: stage === 'completed' ? 100 : null, total: rows, bytes, message })
+  }
+  const write = async (text: string): Promise<void> => {
+    check()
+    await output!.writeFile(text, 'utf8')
+    bytes += Buffer.byteLength(text)
+    check()
+  }
+  try {
+    return await runWithRequestContext({ signal, jobId }, async () => {
+      emit('querying')
+      if (!Number.isFinite(req.maxRows) || req.maxRows <= 0) throw new TypeError('导出数量必须大于 0')
+      const maxRows = Math.min(Math.floor(req.maxRows), MAX_EXPORT_ROWS)
+      check()
+      const { connection, adapter } = await resolveAdapterByConnectionId(req.connectionId)
+      if (!adapter.manifest.transferFormats.includes(req.format)) {
+        throw new SearchEngineError({
+          engineType: connection.engineType,
+          code: 'unsupported_capability',
+          message: '当前引擎不支持此导出格式'
+        })
+      }
+      const input: ExportInput = { index: req.index, maxRows, query: req.query, queryLanguage: req.queryLanguage, signal, isCancelled: () => signal.aborted }
+      const batches: AsyncIterable<DocumentHit[]> = adapter.exportBatches
+        ? requireOperation(adapter, 'exportBatches')(connection, input)
+        : (async function* () { yield (await requireOperation(adapter, 'exportDocuments')(connection, input)).hits })()
+      check()
+      await fs.mkdir(path.dirname(req.outputPath), { recursive: true })
+      output = await fs.open(temporaryPath, 'wx')
+      const csvKeys = new Set<string>()
+      const elasticsearchFormat = adapter.manifest.protocolFamily === 'elasticsearch-rest'
+      if (req.format === 'json') await write('[\n')
+      if (req.format === 'csv') spool = await fs.open(spoolPath, 'wx')
+      for await (const batch of batches) {
+        check()
+        emit('writing')
+        for (const hit of batch) {
+          if (rows >= maxRows) break
+          check()
+          if (req.format === 'csv') {
+            for (const key of Object.keys(hit.fields)) csvKeys.add(key)
+            await spool!.writeFile(JSON.stringify({ id: hit.id, fields: hit.fields }) + '\n', 'utf8')
+          } else if (req.format === 'json') {
+            const doc = elasticsearchFormat ? { _id: hit.id, _source: hit.fields } : hit.fields
+            await write((rows > 0 ? ',\n' : '') + JSON.stringify(doc))
+          } else {
+            await write(JSON.stringify({ index: { _index: req.index, _id: hit.id } }) + '\n' + JSON.stringify(hit.fields) + '\n')
+          }
+          rows++
+        }
+        emit('writing')
+        if (rows >= maxRows) break
+      }
+      check()
+      if (req.format === 'json') await write('\n]\n')
+      if (req.format === 'csv') {
+        await spool!.close(); spool = undefined
+        const keys = [...csvKeys].sort()
+        const includeId = elasticsearchFormat
+        await write('\uFEFF' + (includeId ? ['_id', ...keys] : keys).map(csvEscape).join(',') + '\r\n')
+        const reader = createReadStream(spoolPath, { encoding: 'utf8' })
+        const lines = createInterface({ input: reader, crlfDelay: Infinity })
+        const abort = (): void => { reader.destroy(createCancelledError()) }
+        signal.addEventListener('abort', abort, { once: true })
+        try {
+          for await (const line of lines) {
+            check()
+            const hit = JSON.parse(line) as DocumentHit
+            const values = includeId ? [hit.id, ...keys.map((key) => hit.fields[key])] : keys.map((key) => hit.fields[key])
+            await write(values.map(csvEscape).join(',') + '\r\n')
+          }
+        } finally {
+          signal.removeEventListener('abort', abort)
+          lines.close()
+          reader.destroy()
+          await finished(reader).catch(() => undefined)
+        }
+      }
+      check()
+      await output!.close(); output = undefined
+      check()
+      // Commit only a complete file. Failure and cancellation preserve an existing destination.
+      await fs.rename(temporaryPath, req.outputPath)
+      emit('completed', `已导出 ${rows} 条 (${(bytes / 1024).toFixed(1)} KB)`)
+      return { success: true, data: { jobId, connectionId: req.connectionId, index: req.index, format: req.format, outputPath: req.outputPath, rows, bytes } }
     })
-    return {
-      success: false,
-      error: { message }
-    }
+  } catch (err) {
+    const cancelled = isCancelledError(err) || isCancelled(jobId)
+    const error = cancelled
+      ? { code: 'cancelled', operation: 'export:run', message: USER_STOPPED_MESSAGE }
+      : exportError(err, 'export:run')
+    const message = error.message
+    emit(cancelled ? 'cancelled' : 'failed', message)
+    return { success: false, error }
   } finally {
+    await output?.close().catch(() => undefined)
+    await spool?.close().catch(() => undefined)
+    await Promise.all([fs.rm(temporaryPath, { force: true }).catch(() => undefined), fs.rm(spoolPath, { force: true }).catch(() => undefined)])
     clearCancelled(jobId)
   }
 }

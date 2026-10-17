@@ -9,6 +9,8 @@
  */
 
 import { elasticsearchRequest } from './client'
+import { SearchEngineError } from '../../search/errors'
+import { detect as detectOpenSearch } from '../opensearch/detector'
 import type {
   SearchConnection,
   SearchEngineServerInfo
@@ -27,13 +29,21 @@ interface EsRootResponse {
 export async function detect(
   connection: SearchConnection
 ): Promise<SearchEngineServerInfo> {
+  // This internal detector also serves REST-compatible helpers on a cold
+  // version cache. Preserve OpenSearch identity and independent numbering.
+  if (connection.engineType === 'opensearch') return detectOpenSearch(connection)
   const root = await elasticsearchRequest<EsRootResponse>(connection, {
     method: 'GET',
     path: '/'
   })
-  const version = String(root?.version?.number ?? '0.0.0')
-  const parts = version.split('.').map((p) => Number.parseInt(p, 10) || 0)
-  const [major = 0, minor = 0, patch = 0] = parts
+  const version = String(root?.version?.number ?? '')
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version)
+  const major = match ? Number(match[1]) : 0
+  const minor = match ? Number(match[2]) : 0
+  const patch = match ? Number(match[3]) : 0
+  if (!match || major < 6 || major > 9 || root?.version?.distribution === 'opensearch') {
+    throw new SearchEngineError({engineType: 'elasticsearch', code: 'unsupported_capability', message: '服务器版本或发行版不属于受支持的 Elasticsearch 6.x-9.x。'})
+  }
   return {
     engineType: 'elasticsearch',
     engineName: 'Elasticsearch',

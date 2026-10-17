@@ -1,7 +1,8 @@
 /**
- * Index list (phase 3 + 4 + index ops in 13).
+ * Resource catalog with capability-gated index operations.
  *
- * Displays indices returned by `GET /_cat/indices?format=json&bytes=b`.
+ * Displays the engine-neutral resource:list result. Index-specific metrics
+ * remain optional adapter metadata and do not apply to collections or cores.
  * Columns:
  *   - 索引名
  *   - 健康状态
@@ -46,7 +47,7 @@ import {
   SearchOutlined
 } from '@ant-design/icons'
 import { useWorkspaceStore } from '../stores/workspace.store'
-import type { EsIndexInfo } from '@shared/ipc'
+import type { SearchResourceInfo } from '@shared/searchEngine'
 import CreateIndexModal from './CreateIndexModal'
 
 const { Text } = Typography
@@ -66,7 +67,8 @@ function statusColor(status: 'open' | 'close' | string): string {
   return 'default'
 }
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number | undefined): string {
+  if (bytes === undefined) return '—'
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
   let i = 0
@@ -78,9 +80,24 @@ function formatBytes(bytes: number): string {
   return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`
 }
 
-function formatNumber(n: number): string {
-  if (!Number.isFinite(n)) return '0'
+function formatNumber(n: number | undefined): string {
+  if (n === undefined || !Number.isFinite(n)) return '—'
   return n.toLocaleString('en-US')
+}
+
+function indexMetric(resource: SearchResourceInfo, key: string): number | undefined {
+  if (resource.kind !== 'index') return undefined
+  const value = resource.metadata?.[key]
+  if (typeof value !== 'number' && (typeof value !== 'string' || !value.trim())) return undefined
+  const number = Number(value)
+  return Number.isFinite(number) ? number : undefined
+}
+
+const RESOURCE_KIND_LABELS: Record<SearchResourceInfo['kind'], string> = {
+  index: '索引',
+  collection: 'Collection',
+  core: 'Core',
+  resource: '资源'
 }
 
 interface Props {
@@ -95,6 +112,7 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
   const totalCount = useWorkspaceStore((s) => s.indexCount)
   const fetchIndices = useWorkspaceStore((s) => s.fetchIndices)
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
+  const capabilities = useWorkspaceStore((s) => s.capabilities)
   const deleteIndex = useWorkspaceStore((s) => s.deleteIndex)
   // V0.3.1 A-1: per-row close / open lifecycle actions. Each holds
   // its own loading flag so the other buttons on the same row keep
@@ -115,17 +133,56 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
   const [deletingName, setDeletingName] = useState<string | null>(null)
   const [togglingName, setTogglingName] = useState<string | null>(null)
 
-  const filtered = useMemo<EsIndexInfo[]>(() => {
+  // Generic collections and cores retain their own model; only declared
+  // index capabilities expose Elasticsearch-style metrics and controls.
+  const canManageIndexes = capabilities?.indexManagement === true
+  const canOpenCloseIndexes = capabilities?.openCloseIndex === true
+  const showIndexMetrics = capabilities?.indices === true
+
+  const filtered = useMemo<SearchResourceInfo[]>(() => {
     const q = keyword.trim().toLowerCase()
     if (!q) return indices
-    return indices.filter((idx) => idx.index.toLowerCase().includes(q))
+    return indices.filter((resource) => resource.name.toLowerCase().includes(q))
   }, [indices, keyword])
 
-  const columns: ColumnsType<EsIndexInfo> = [
+  const indexMetricColumns: ColumnsType<SearchResourceInfo> = showIndexMetrics ? [
     {
-      title: '索引名',
-      dataIndex: 'index',
-      key: 'index',
+      title: '删除文档数',
+      key: 'docsDeleted',
+      width: 110,
+      align: 'right',
+      sorter: (a, b) => (indexMetric(a, 'docsDeleted') ?? -1) - (indexMetric(b, 'docsDeleted') ?? -1),
+      render: (_v: unknown, resource) => formatNumber(indexMetric(resource, 'docsDeleted'))
+    },
+    {
+      title: '存储大小',
+      key: 'storeSize',
+      width: 120,
+      align: 'right',
+      sorter: (a, b) => (indexMetric(a, 'storeSize') ?? -1) - (indexMetric(b, 'storeSize') ?? -1),
+      render: (_v: unknown, resource) => formatBytes(indexMetric(resource, 'storeSize'))
+    },
+    {
+      title: '主分片',
+      key: 'pri',
+      width: 80,
+      align: 'right',
+      render: (_v: unknown, resource) => formatNumber(indexMetric(resource, 'pri'))
+    },
+    {
+      title: '副本',
+      key: 'rep',
+      width: 80,
+      align: 'right',
+      render: (_v: unknown, resource) => formatNumber(indexMetric(resource, 'rep'))
+    }
+  ] : []
+
+  const columns: ColumnsType<SearchResourceInfo> = [
+    {
+      title: '资源名',
+      dataIndex: 'name',
+      key: 'name',
       width: 240,
       ellipsis: true,
       render: (v: string) => (
@@ -135,66 +192,43 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
       )
     },
     {
+      title: '类型',
+      dataIndex: 'kind',
+      key: 'kind',
+      width: 110,
+      render: (kind: SearchResourceInfo['kind']) => RESOURCE_KIND_LABELS[kind]
+    },
+    {
       title: '健康',
       dataIndex: 'health',
       key: 'health',
       width: 90,
-      render: (v: string) => <Tag color={healthColor(v)}>{v}</Tag>
+      render: (v?: string) => v ? <Tag color={healthColor(v)}>{v}</Tag> : '—'
     },
     {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
       width: 90,
-      render: (v: string) => <Tag color={statusColor(v)}>{v}</Tag>
+      render: (v?: string) => v ? <Tag color={statusColor(v)}>{v}</Tag> : '—'
     },
     {
       title: '文档数',
-      dataIndex: 'docsCount',
-      key: 'docsCount',
+      dataIndex: 'documentCount',
+      key: 'documentCount',
       width: 110,
       align: 'right',
-      sorter: (a, b) => a.docsCount - b.docsCount,
-      render: (v: number) => formatNumber(v)
+      sorter: (a, b) => (a.documentCount ?? -1) - (b.documentCount ?? -1),
+      render: (v?: number) => formatNumber(v)
     },
-    {
-      title: '删除文档数',
-      dataIndex: 'docsDeleted',
-      key: 'docsDeleted',
-      width: 110,
-      align: 'right',
-      sorter: (a, b) => a.docsDeleted - b.docsDeleted,
-      render: (v: number) => formatNumber(v)
-    },
-    {
-      title: '存储大小',
-      dataIndex: 'storeSize',
-      key: 'storeSize',
-      width: 120,
-      align: 'right',
-      sorter: (a, b) => a.storeSize - b.storeSize,
-      render: (v: number) => formatBytes(v)
-    },
-    {
-      title: '主分片',
-      dataIndex: 'pri',
-      key: 'pri',
-      width: 80,
-      align: 'right'
-    },
-    {
-      title: '副本',
-      dataIndex: 'rep',
-      key: 'rep',
-      width: 80,
-      align: 'right'
-    },
-    {
+    ...indexMetricColumns,
+    ...(canManageIndexes || canOpenCloseIndexes ? [{
       title: '操作',
       key: 'actions',
-      width: 200,
-      fixed: 'right',
-      render: (_v, record) => {
+      width: canManageIndexes && canOpenCloseIndexes ? 200 : 96,
+      fixed: 'right' as const,
+      render: (_v: unknown, record: SearchResourceInfo) => {
+        if (record.kind !== 'index') return null
         const isOpen = record.status === 'open'
         // V0.3.1 A-1: close is destructive-with-side-effects (the
         // index stops accepting reads / writes until reopened), so
@@ -202,23 +236,23 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
         // and doesn't need one.
         return (
           <Space size={4} onClick={(e) => e.stopPropagation()}>
-            {isOpen ? (
+            {canOpenCloseIndexes && (isOpen ? (
               <Popconfirm
-                title={`确定关闭索引 "${record.index}" ？`}
+                title={`确定关闭索引 "${record.name}" ？`}
                 description="关闭后索引将无法读写，重新打开后才能继续使用。"
                 okText="关闭"
                 cancelText="取消"
                 onConfirm={async (e) => {
                   e?.stopPropagation()
                   if (!activeConnectionId) return
-                  setTogglingName(record.index)
+                  setTogglingName(record.name)
                   try {
                     const res = await closeIndex({
                       connectionId: activeConnectionId,
-                      index: record.index
+                      index: record.name
                     })
                     if (res?.success) {
-                      message.success(`已关闭索引 "${record.index}"`)
+                      message.success(`已关闭索引 "${record.name}"`)
                     } else if (res) {
                       message.error(
                         `关闭索引失败：${res.error?.message ?? '未知错误'}`
@@ -234,7 +268,7 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
                   type="text"
                   size="small"
                   icon={<EyeInvisibleOutlined />}
-                  loading={togglingName === record.index}
+                  loading={togglingName === record.name}
                   onClick={(e) => e.stopPropagation()}
                 >
                   关闭
@@ -245,18 +279,18 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
                 type="text"
                 size="small"
                 icon={<EyeOutlined />}
-                loading={togglingName === record.index}
+                loading={togglingName === record.name}
                 onClick={async (e) => {
                   e.stopPropagation()
                   if (!activeConnectionId) return
-                  setTogglingName(record.index)
+                  setTogglingName(record.name)
                   try {
                     const res = await openIndex({
                       connectionId: activeConnectionId,
-                      index: record.index
+                      index: record.name
                     })
                     if (res?.success) {
-                      message.success(`已打开索引 "${record.index}"`)
+                      message.success(`已打开索引 "${record.name}"`)
                     } else if (res) {
                       message.error(
                         `打开索引失败：${res.error?.message ?? '未知错误'}`
@@ -269,9 +303,9 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
               >
                 打开
               </Button>
-            )}
-            <Popconfirm
-              title={`确定删除索引 "${record.index}" ？`}
+            ))}
+            {canManageIndexes && <Popconfirm
+              title={`确定删除索引 "${record.name}" ？`}
               description="删除操作不可恢复，索引数据将永久丢失。"
               okText="删除"
               okButtonProps={{ danger: true }}
@@ -279,14 +313,18 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
               onConfirm={async (e) => {
                 e?.stopPropagation()
                 if (!activeConnectionId) return
-                setDeletingName(record.index)
+                setDeletingName(record.name)
                 try {
                   const res = await deleteIndex({
                     connectionId: activeConnectionId,
-                    index: record.index
+                    index: record.name
                   })
-                  if (res) {
-                    message.success(`已删除索引 "${record.index}"`)
+                  if (res?.success) {
+                    message.success(`已删除索引 "${record.name}"`)
+                  } else if (res) {
+                    message.error(
+                      `删除索引失败：${res.error?.message ?? '未知错误'}`
+                    )
                   }
                 } finally {
                   setDeletingName(null)
@@ -299,16 +337,16 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
                 danger
                 size="small"
                 icon={<DeleteOutlined />}
-                loading={deletingName === record.index}
+                loading={deletingName === record.name}
                 onClick={(e) => e.stopPropagation()}
               >
                 删除
               </Button>
-            </Popconfirm>
+            </Popconfirm>}
           </Space>
         )
       }
-    }
+    }] : [])
   ]
 
   return (
@@ -336,18 +374,20 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
           <Input
             allowClear
             prefix={<SearchOutlined />}
-            placeholder="按索引名搜索"
+            placeholder="按资源名搜索"
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
             style={{ width: 260 }}
           />
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={() => setCreateOpen(true)}
-          >
-            新建索引
-          </Button>
+          {canManageIndexes ? (
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => setCreateOpen(true)}
+            >
+              新建索引
+            </Button>
+          ) : null}
           <Button
             icon={<ReloadOutlined />}
             onClick={() => {
@@ -360,7 +400,7 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
           <Text type="secondary" style={{ fontSize: 12 }}>
             {keyword
               ? `匹配 ${filtered.length} / ${totalCount}`
-              : `共 ${totalCount} 个索引`}
+              : `共 ${totalCount} 个资源`}
           </Text>
           <Text type="secondary" style={{ fontSize: 12 }}>
             · 点击行查看详情
@@ -371,18 +411,18 @@ export default function IndexList({ onSelect }: Props): JSX.Element {
       <div style={{ flex: '1 1 auto', minHeight: 0, overflow: 'auto', padding: '0 8px' }}>
         {error ? (
           <div style={{ padding: 16 }}>
-            <Text type="danger">无法加载索引列表：{error}</Text>
+            <Text type="danger">无法加载资源列表：{error}</Text>
           </div>
         ) : (
-          <Table<EsIndexInfo>
-            rowKey="index"
+          <Table<SearchResourceInfo>
+            rowKey="name"
             columns={columns}
             dataSource={filtered}
             loading={loading}
             size="middle"
             scroll={{ x: 'max-content' }}
             onRow={(record) => ({
-              onClick: () => onSelect(record.index),
+              onClick: () => onSelect(record.name),
               style: { cursor: 'pointer' }
             })}
             pagination={{

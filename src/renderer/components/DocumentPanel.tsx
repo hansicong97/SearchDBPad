@@ -34,6 +34,7 @@ import {
   ReloadOutlined
 } from '@ant-design/icons'
 import { useWorkspaceStore } from '../stores/workspace.store'
+import { useConnectionStore } from '../stores/connection.store'
 import DocumentEditorModal, {
   type DocumentEditorMode
 } from './DocumentEditorModal'
@@ -52,7 +53,7 @@ interface Props {
  *  for documents with many fields. */
 function SourceCell({ value }: { value: Record<string, unknown> | null }): JSX.Element {
   if (value === null) {
-    return <Text type="secondary">(无 _source)</Text>
+    return <Text type="secondary">(无文档字段)</Text>
   }
   const pretty = (() => {
     try {
@@ -87,6 +88,8 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
   const { modal, message } = AntdApp.useApp()
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
   const selectedIndex = useWorkspaceStore((s) => s.selectedIndex)
+  const capabilities = useWorkspaceStore((s) => s.capabilities)
+  const engineType = useConnectionStore((s) => s.connections.find((c) => c.id === activeConnectionId)?.engineType ?? 'elasticsearch')
 
   const hits = useWorkspaceStore((s) => s.documentHits)
   const total = useWorkspaceStore((s) => s.documentTotal)
@@ -107,6 +110,11 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
   const [editorOpen, setEditorOpen] = useState<boolean>(false)
   const [editorMode, setEditorMode] = useState<DocumentEditorMode>('create')
   const [editingHit, setEditingHit] = useState<DocumentHit | null>(null)
+
+  useEffect(() => {
+    setEditorOpen(false)
+    setEditingHit(null)
+  }, [activeConnectionId, selectedIndex])
 
   // Auto-load the first page when the selected index changes. The store
   // also kicks off this fetch in `selectIndex`, so this guards the case
@@ -143,6 +151,7 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
   }
 
   const handleEdit = (hit: DocumentHit): void => {
+    if (!hit.id) return
     setEditorMode('edit')
     setEditingHit(hit)
     setEditorOpen(true)
@@ -154,12 +163,12 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
   }
 
   const handleDelete = (hit: DocumentHit): void => {
-    if (!activeConnectionId || !selectedIndex) return
+    if (!activeConnectionId || !selectedIndex || !hit.id) return
     modal.confirm({
       title: '确定删除该文档？',
       content: (
         <div>
-          <div>_id: <Text code>{hit._id}</Text></div>
+          <div>ID: <Text code>{hit.id}</Text></div>
           <Text type="secondary" style={{ fontSize: 12 }}>
             删除后无法通过当前接口恢复，请确认。
           </Text>
@@ -173,14 +182,14 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
         const res = await deleteDocument({
           connectionId: activeConnectionId,
           index: selectedIndex,
-          id: hit._id
+          id: hit.id ?? ''
         })
         if (res === null) return
         if (res.success && res.data) {
           if (res.data.result === 'not_found') {
-            message.warning(`文档已不存在 _id=${hit._id}`)
+            message.warning(`文档已不存在 ID=${hit.id}`)
           } else {
-            message.success(`已删除文档 _id=${hit._id}`)
+            message.success(`已删除文档 ID=${hit.id}`)
           }
         } else {
           message.error(`删除失败：${res.error?.message ?? '未知错误'}`)
@@ -191,8 +200,8 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
 
   const columns: ColumnsType<DocumentHit> = [
     {
-      title: '_id',
-      dataIndex: '_id',
+      title: 'ID',
+      dataIndex: 'id',
       key: '_id',
       width: 220,
       render: (v: string) => (
@@ -204,19 +213,10 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
       )
     },
     {
-      title: '_score',
-      dataIndex: '_score',
-      key: '_score',
-      width: 90,
-      align: 'right',
-      render: (v: number | null) =>
-        v === null || v === undefined ? <Text type="secondary">-</Text> : v.toFixed(3)
-    },
-    {
-      title: '_source',
-      dataIndex: '_source',
-      key: '_source',
-      render: (_v: unknown, record: DocumentHit) => <SourceCell value={record._source} />
+      title: '文档字段',
+      dataIndex: 'fields',
+      key: 'fields',
+      render: (_v: unknown, record: DocumentHit) => <SourceCell value={record.fields} />
     },
     {
       title: '操作',
@@ -225,13 +225,13 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
       fixed: 'right',
       render: (_v: unknown, record: DocumentHit) => (
         <Space size={4}>
-          <Tooltip title="编辑 _source">
+          <Tooltip title="编辑文档字段">
             <Button
               size="small"
               type="link"
               icon={<EditOutlined />}
               onClick={() => handleEdit(record)}
-              disabled={loading}
+              disabled={loading || !capabilities?.documentWrite || !record.id}
             >
               编辑
             </Button>
@@ -243,7 +243,7 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
               danger
               icon={<DeleteOutlined />}
               onClick={() => handleDelete(record)}
-              disabled={loading}
+              disabled={loading || !capabilities?.documentWrite || !record.id}
             >
               删除
             </Button>
@@ -282,7 +282,7 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
           type="primary"
           icon={<PlusOutlined />}
           onClick={handleCreate}
-          disabled={!activeConnectionId || !selectedIndex || loading}
+          disabled={!activeConnectionId || !selectedIndex || loading || !capabilities?.documentWrite}
           size="small"
         >
           新建文档
@@ -292,7 +292,7 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
         </Text>
         {!autoLoad && hits.length === 0 && !loading && !error ? (
           <Text type="secondary" style={{ fontSize: 12 }}>
-            · 默认查询 match_all
+            · 默认查询 {engineType === 'solr' ? 'q=*:*' : 'match_all'}
           </Text>
         ) : null}
       </Space>
@@ -304,7 +304,7 @@ export default function DocumentPanel({ autoLoad = true }: Props): JSX.Element {
       ) : (
         <div style={{ flex: '1 1 auto', minHeight: 0, overflow: 'auto' }}>
           <Table<DocumentHit>
-            rowKey="_id"
+            rowKey={(record, index) => record.id ?? `hit-${index}`}
             columns={columns}
             dataSource={hits}
             loading={loading}

@@ -6,7 +6,7 @@
  * main process pushes small status updates to the renderer over
  * dedicated IPC event channels (`import:progress`, `export:progress`)
  * using `webContents.send`. The renderer subscribes through
- * `esApi.importDocs.onProgress` / `esApi.exportDocs.onProgress` and
+ * `searchApi.importDocs.onProgress` / `searchApi.exportDocs.onProgress` and
  * renders a progress bar + stage label + counters.
  *
  * Each event carries a `jobId` so the renderer can drop late or
@@ -27,12 +27,14 @@ import { IpcChannels } from '../../shared/ipc'
  *  window is open (e.g. the user closed the app mid-import). */
 export function sendImportProgress(progress: ImportProgress): void {
   const win = BrowserWindow.getAllWindows()[0]
-  win?.webContents.send(IpcChannels.ImportProgressEvent, progress)
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return
+  try { win.webContents.send(IpcChannels.ImportProgressEvent, progress) } catch { /* Window closed during dispatch. */ }
 }
 
 /** Send an export-progress update to the renderer. Same no-op
  *  behaviour as `sendImportProgress`. */
 export function sendExportProgress(progress: ExportProgress): void {
   const win = BrowserWindow.getAllWindows()[0]
-  win?.webContents.send(IpcChannels.ExportProgressEvent, progress)
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return
+  try { win.webContents.send(IpcChannels.ExportProgressEvent, progress) } catch { /* Window closed during dispatch. */ }
 }

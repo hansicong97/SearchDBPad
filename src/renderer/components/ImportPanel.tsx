@@ -44,6 +44,7 @@ import {
   StopOutlined
 } from '@ant-design/icons'
 import { useWorkspaceStore } from '../stores/workspace.store'
+import { useConnectionStore } from '../stores/connection.store'
 import { useJobTaskStore } from '../stores/jobTask.store'
 import type {
   ImportExecuteResult,
@@ -100,6 +101,8 @@ export default function ImportPanel(): JSX.Element {
   const { message, modal } = AntdApp.useApp()
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
   const selectedIndex = useWorkspaceStore((s) => s.selectedIndex)
+  const capabilities = useWorkspaceStore((s) => s.capabilities)
+  const engineType = useConnectionStore((s) => s.connections.find((c) => c.id === activeConnectionId)?.engineType ?? 'elasticsearch')
   const indexList = useWorkspaceStore((s) => s.indices)
   const runImport = useWorkspaceStore((s) => s.runImport)
   // V0.3.10 F-5: when we kick off an import we register the job in
@@ -118,6 +121,7 @@ export default function ImportPanel(): JSX.Element {
    *  extension on the main side". */
   const [format, setFormat] = useState<ImportFormat>('auto')
   const [mode, setMode] = useState<ImportMode>('append')
+  const [commitPolicy, setCommitPolicy] = useState<'auto' | 'commit' | 'softCommit' | 'none'>('auto')
   const [preview, setPreview] = useState<ImportPreviewResult | null>(null)
   const [previewLoading, setPreviewLoading] = useState<boolean>(false)
   const [result, setResult] = useState<ImportExecuteResult | null>(null)
@@ -142,7 +146,7 @@ export default function ImportPanel(): JSX.Element {
   // close over `setProgress`); the unsubscribe handle is captured
   // for cleanup on unmount.
   useEffect(() => {
-    const unsubscribe = window.esApi.importDocs.onProgress((p) => {
+    const unsubscribe = window.searchApi.importDocs.onProgress((p) => {
       const activeJobId = activeJobIdRef.current
       if (activeJobId && p.jobId !== activeJobId) return
       if (!activeJobId && !importing && !pendingMetaRef.current) return
@@ -150,7 +154,7 @@ export default function ImportPanel(): JSX.Element {
         activeJobIdRef.current = p.jobId
         registerImportTask(p.jobId, pendingMetaRef.current)
       }
-      if (p.stage === 'completed' || p.stage === 'failed') {
+      if (p.stage === 'completed' || p.stage === 'cancelled' || p.stage === 'failed') {
         pendingMetaRef.current = null
         setCancelRequested(false)
       }
@@ -168,10 +172,15 @@ export default function ImportPanel(): JSX.Element {
     }
   }, [selectedIndex, pickedFile, result])
 
-  const ready = !!activeConnectionId && !!targetIndex && !!pickedFile
+  const ready = !!activeConnectionId && !!targetIndex.trim() && !!pickedFile && !!capabilities?.documentWrite && !!capabilities?.bulkTransfer && !!capabilities?.importExport
+  const solr = engineType === 'solr'
+
+  useEffect(() => {
+    if (solr && format === 'ndjson') setFormat('auto')
+  }, [solr, format])
 
   const indexSuggestions = useMemo(
-    () => indexList.map((i) => ({ value: i.index })),
+    () => indexList.map((i) => ({ value: i.name })),
     [indexList]
   )
 
@@ -190,13 +199,17 @@ export default function ImportPanel(): JSX.Element {
     // V0.3.10 F-2: omit `format` so the native dialog opens with
     // "all supported files" pre-selected. The user can pick
     // JSON / NDJSON / CSV without switching filters.
-    const res = await window.esApi.importDocs.pickFile({})
+    const res = await window.searchApi.importDocs.pickFile({})
     if (!res.success || !res.data) {
       setErrorMsg(res.error?.message ?? '打开文件对话框失败')
       return
     }
     if (res.data.filePath === null || res.data.format === null) {
       // User cancelled — silent no-op.
+      return
+    }
+    if (solr && res.data.format === 'ndjson') {
+      setErrorMsg('Solr 不支持 NDJSON，请选择 JSON 或 CSV')
       return
     }
     setPickedFile({
@@ -212,12 +225,17 @@ export default function ImportPanel(): JSX.Element {
 
   const handlePreview = async (): Promise<void> => {
     if (!pickedFile) return
+    if (solr && resolvedFormat === 'ndjson') {
+      setErrorMsg('Solr 不支持 NDJSON，请选择 JSON 或 CSV')
+      return
+    }
     setErrorMsg(null)
     setResult(null)
     setPreview(null)
     setPreviewLoading(true)
     try {
-      const res = await window.esApi.importDocs.preview({
+      const res = await window.searchApi.importDocs.preview({
+        connectionId: activeConnectionId ?? undefined,
         filePath: pickedFile.filePath,
         format,
         maxRows: PREVIEW_ROW_COUNT
@@ -242,6 +260,10 @@ export default function ImportPanel(): JSX.Element {
 
   const handleExecute = async (): Promise<void> => {
     if (!ready || !pickedFile || !activeConnectionId) return
+    if (solr && resolvedFormat === 'ndjson') {
+      setErrorMsg('Solr 不支持 NDJSON，请选择 JSON 或 CSV')
+      return
+    }
     setErrorMsg(null)
     setResult(null)
     // Per plan §5.5.2, 覆盖 requires a second confirmation that
@@ -255,11 +277,11 @@ export default function ImportPanel(): JSX.Element {
           content: (
             <Space direction="vertical" size={4}>
               <Text>
-                该操作会先清空索引 <Text code>{targetIndex}</Text> 下的所有现有文档，
+                该操作会先清空资源 <Text code>{targetIndex}</Text> 下的所有现有文档，
                 然后再写入文件内容。
               </Text>
               <Text type="danger">
-                现有文档将被永久删除，但索引本身、Mapping 和 Settings 保持不变。
+                现有文档将被永久删除，资源和字段定义会保留。
               </Text>
             </Space>
           ),
@@ -291,7 +313,8 @@ export default function ImportPanel(): JSX.Element {
         index: targetIndex,
         filePath: pickedFile.filePath,
         format,
-        mode
+        mode,
+        commitPolicy: solr ? commitPolicy : undefined
       })
       if (!res || !res.success || !res.data) {
         setErrorMsg(res?.error?.message ?? '导入失败')
@@ -327,11 +350,11 @@ export default function ImportPanel(): JSX.Element {
   }
 
   const handleCancelImport = async (): Promise<void> => {
-    if (!progress || progress.stage === 'completed' || progress.stage === 'failed') return
+    if (!progress || progress.stage === 'completed' || progress.stage === 'cancelled' || progress.stage === 'failed') return
     setCancelRequested(true)
     const res = await cancelTask(progress.jobId)
     if (!res.success) {
-      const fallback = await window.esApi.importDocs.cancel({ jobId: progress.jobId })
+      const fallback = await window.searchApi.importDocs.cancel({ jobId: progress.jobId })
       if (!fallback.success) {
         setCancelRequested(false)
         message.error(fallback.error?.message ?? res.error?.message ?? '停止导入任务失败')
@@ -347,19 +370,19 @@ export default function ImportPanel(): JSX.Element {
       render: (_v: unknown, _r: ImportPreviewRow, idx: number) => idx + 1
     },
     {
-      title: '_id',
+      title: 'ID',
       dataIndex: 'id',
       key: 'id',
       width: 200,
       render: (v: string | undefined) =>
         v === undefined ? (
-          <Text type="secondary">（自动生成）</Text>
+          <Text type="secondary">{solr ? '使用 Schema uniqueKey' : '自动生成'}</Text>
         ) : (
           <Text strong>{v}</Text>
         )
     },
     {
-      title: '_source',
+      title: '文档字段',
       dataIndex: 'source',
       key: 'source',
       render: (_v: unknown, record: ImportPreviewRow) => (
@@ -377,7 +400,7 @@ export default function ImportPanel(): JSX.Element {
       render: (v: number) => v + 1
     },
     {
-      title: '_id',
+      title: 'ID',
       dataIndex: 'id',
       key: 'id',
       width: 160,
@@ -397,9 +420,10 @@ export default function ImportPanel(): JSX.Element {
   const STAGE_LABEL: Record<ImportStage, string> = {
     reading: '读取文件中',
     parsing: '解析文件中',
-    clearing: '清空索引中',
+    clearing: '清空资源中',
     writing: '写入文档中',
     completed: '已完成',
+    cancelled: '已停止',
     failed: '失败'
   }
 
@@ -412,31 +436,31 @@ export default function ImportPanel(): JSX.Element {
     !!progress &&
     (importing ||
       progress.stage === 'completed' ||
-      progress.stage === 'failed')
+      progress.stage === 'failed' || progress.stage === 'cancelled')
   const progressPercent = progress?.percent ?? 0
   const progressStatus: 'normal' | 'success' | 'exception' | 'active' =
     cancelRequested
       ? 'exception'
       : progress?.stage === 'completed'
         ? 'success'
-        : progress?.stage === 'failed'
+        : progress?.stage === 'failed' || progress?.stage === 'cancelled'
           ? 'exception'
           : progress && progress.percent !== null
             ? 'active'
             : 'normal'
   const canCancelProgress =
-    !!progress && progress.stage !== 'completed' && progress.stage !== 'failed'
+    !!progress && progress.stage !== 'completed' && progress.stage !== 'cancelled' && progress.stage !== 'failed'
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Card size="small" title="导入设置">
         <Form layout="vertical" disabled={importing}>
-          <Form.Item label="目标索引" required>
+          <Form.Item label={solr ? '目标 Collection / Core' : '目标索引'} required>
             <AutoComplete
               value={targetIndex}
               onChange={(v) => setTargetIndex(v)}
               options={indexSuggestions}
-              placeholder="选择已有索引或输入新名称"
+              placeholder={solr ? '选择已有 Collection / Core' : '选择已有索引或输入新名称'}
               filterOption={(input, option) =>
                 (option?.value ?? '').toLowerCase().includes(input.toLowerCase())
               }
@@ -471,7 +495,7 @@ export default function ImportPanel(): JSX.Element {
               options={[
                 { value: 'auto', label: '自动识别' },
                 { value: 'json', label: 'JSON' },
-                { value: 'ndjson', label: 'NDJSON' },
+                ...(!solr ? [{ value: 'ndjson', label: 'NDJSON' }] : []),
                 { value: 'csv', label: 'CSV' }
               ]}
             />
@@ -481,6 +505,13 @@ export default function ImportPanel(): JSX.Element {
               </Text>
             ) : null}
           </Form.Item>
+
+          {solr ? <Form.Item label="提交策略" tooltip="Solr 写入可选择立即 commit、softCommit 或交由服务自动提交">
+            <Select value={commitPolicy} onChange={(v) => setCommitPolicy(v)} style={{ width: 220 }} options={[
+              { value: 'auto', label: '自动' }, { value: 'commit', label: 'commit' },
+              { value: 'softCommit', label: 'softCommit' }, { value: 'none', label: '不提交' }
+            ]} />
+          </Form.Item> : null}
 
           <Form.Item label="导入模式">
             <Radio.Group
@@ -492,7 +523,7 @@ export default function ImportPanel(): JSX.Element {
                   <Space size={4}>
                     <Text>追加</Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      (保留索引现有数据)
+                      (保留资源现有数据)
                     </Text>
                   </Space>
                 </Radio>
@@ -500,7 +531,7 @@ export default function ImportPanel(): JSX.Element {
                   <Space size={4}>
                     <Text>覆盖</Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      (先清空索引现有文档，再写入)
+                      (先清空资源现有文档，再写入)
                     </Text>
                   </Space>
                 </Radio>
@@ -555,6 +586,8 @@ export default function ImportPanel(): JSX.Element {
                   <CheckCircleOutlined style={{ color: '#52c41a' }} />
                 ) : progress.stage === 'failed' ? (
                   <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                ) : progress.stage === 'cancelled' ? (
+                  <StopOutlined />
                 ) : (
                   <LoadingOutlined />
                 )}
@@ -681,7 +714,7 @@ export default function ImportPanel(): JSX.Element {
                 失败 <Text strong>{result.failed.toLocaleString('en-US')}</Text>
               </Text>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                索引：<Text code>{result.index}</Text>
+                资源：<Text code>{result.index}</Text>
               </Text>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 模式：<Text code>{mode === 'replace' ? '覆盖' : '追加'}</Text>

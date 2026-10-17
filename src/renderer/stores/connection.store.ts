@@ -2,7 +2,7 @@
  * Renderer-side connection state.
  *
  * Owns the list of saved connections, the loading flag, and the last error.
- * All mutations go through `window.esApi.connections.*` IPC calls — the
+ * All mutations go through `window.searchApi.connections.*` IPC calls — the
  * renderer never touches the disk or the network directly.
  */
 
@@ -12,12 +12,12 @@ import type {
   ConnectionFolder,
   ConnectionFolderInput,
   ConnectionTestResult,
-  EsConnection,
-  EsConnectionInput
+  SearchConnection,
+  SearchConnectionInput
 } from '@shared/ipc'
 
 interface ConnectionState {
-  connections: EsConnection[]
+  connections: SearchConnection[]
   loading: boolean
   error: string | null
   lastTestResult: ConnectionTestResult | null
@@ -27,11 +27,11 @@ interface ConnectionState {
   folderError: string | null
 
   fetch: () => Promise<void>
-  create: (input: EsConnectionInput) => Promise<boolean>
-  update: (input: EsConnectionInput) => Promise<boolean>
+  create: (input: SearchConnectionInput) => Promise<boolean>
+  update: (input: SearchConnectionInput) => Promise<boolean>
   remove: (id: string) => Promise<boolean>
   test: (
-    input: EsConnectionInput
+    input: SearchConnectionInput
   ) => Promise<ConnectionTestOutcome>
   clearError: () => void
 
@@ -80,7 +80,7 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
 
   fetch: async () => {
     set({ loading: true, error: null })
-    const res = await window.esApi.connections.list()
+    const res = await window.searchApi.connections.list()
     if (res.success) {
       set({ connections: res.data ?? [], loading: false })
     } else {
@@ -90,9 +90,9 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
 
   create: async (input) => {
     set({ error: null })
-    const res = await window.esApi.connections.create(input)
+    const res = await window.searchApi.connections.create(input)
     if (unwrap(res)) {
-      const listRes = await window.esApi.connections.list()
+      const listRes = await window.searchApi.connections.list()
       if (listRes.success) set({ connections: listRes.data ?? [] })
       return true
     }
@@ -102,9 +102,9 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
 
   update: async (input) => {
     set({ error: null })
-    const res = await window.esApi.connections.update(input)
+    const res = await window.searchApi.connections.update(input)
     if (unwrap(res)) {
-      const listRes = await window.esApi.connections.list()
+      const listRes = await window.searchApi.connections.list()
       if (listRes.success) set({ connections: listRes.data ?? [] })
       return true
     }
@@ -114,9 +114,9 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
 
   remove: async (id) => {
     set({ error: null })
-    const res = await window.esApi.connections.delete(id)
+    const res = await window.searchApi.connections.delete(id)
     if (unwrap(res)) {
-      const listRes = await window.esApi.connections.list()
+      const listRes = await window.searchApi.connections.list()
       if (listRes.success) set({ connections: listRes.data ?? [] })
       return true
     }
@@ -144,9 +144,10 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
         c.id === id ? { ...c, folderId } : c
       )
     }))
-    const res = await window.esApi.connections.update({
+    const res = await window.searchApi.connections.update({
       id,
       name: current.name,
+      engineType: current.engineType,
       url: current.url,
       authType: current.authType,
       username: current.username,
@@ -158,7 +159,7 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
       folderId
     })
     if (res.success) {
-      const listRes = await window.esApi.connections.list()
+      const listRes = await window.searchApi.connections.list()
       if (listRes.success) set({ connections: listRes.data ?? [] })
       return true
     }
@@ -178,7 +179,7 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     // return value lets the caller decide how to surface failures
     // (form-level Alert vs. toast message). We do keep `lastTestResult`
     // in sync so the page can show the most recent successful probe.
-    const res = await window.esApi.connections.test(input)
+    const res = await window.searchApi.connections.test(input)
     if (res.success && res.data) {
       set({ lastTestResult: res.data })
       return { ok: true, result: res.data }
@@ -192,7 +193,7 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
 
   fetchFolders: async () => {
     set({ folderLoading: true, folderError: null })
-    const res = await window.esApi.connectionFolders.list()
+    const res = await window.searchApi.connectionFolders.list()
     if (res.success) {
       set({ folders: res.data ?? [], folderLoading: false })
     } else {
@@ -205,7 +206,7 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
 
   createFolder: async (input) => {
     set({ folderError: null })
-    const res = await window.esApi.connectionFolders.create(input)
+    const res = await window.searchApi.connectionFolders.create(input)
     if (res.success && res.data) {
       set((state) => ({ folders: [...state.folders, res.data as ConnectionFolder] }))
       return true
@@ -216,7 +217,7 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
 
   updateFolder: async (input) => {
     set({ folderError: null })
-    const res = await window.esApi.connectionFolders.update(input)
+    const res = await window.searchApi.connectionFolders.update(input)
     if (res.success && res.data) {
       const updated = res.data
       set((state) => ({
@@ -230,7 +231,7 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
 
   removeFolder: async (id) => {
     set({ folderError: null })
-    const res = await window.esApi.connectionFolders.delete(id)
+    const res = await window.searchApi.connectionFolders.delete(id)
     if (res.success) {
       set((state) => ({
         folders: state.folders.filter((f) => f.id !== id),

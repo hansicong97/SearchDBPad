@@ -9,6 +9,7 @@
  */
 
 import { elasticsearchRequest } from './client'
+import { SearchEngineError } from '../../search/errors'
 import type { SearchConnection } from '../../../shared/searchEngine'
 import type {
   ClusterHealth,
@@ -83,7 +84,7 @@ export async function testConnection(
   if (rootResult.status === 'rejected') {
     return {
       reachable: false,
-      message: `无法连接 Elasticsearch: ${(rootResult.reason as Error).message}`
+      message: connectionFailureMessage(rootResult.reason)
     }
   }
   const root = rootResult.value
@@ -95,4 +96,18 @@ export async function testConnection(
     version: root.version?.number,
     health: health?.status ?? 'unknown'
   }
+}
+
+/** Keep transport and authentication details out of the renderer-facing
+ * connection test result. Adapter errors may contain URLs or server text. */
+function connectionFailureMessage(error: unknown): string {
+  if (error instanceof SearchEngineError) {
+    switch (error.code) {
+      case 'auth_failed': return '无法连接 Elasticsearch：认证失败，请检查用户名和密码。'
+      case 'timeout': return '无法连接 Elasticsearch：请求超时。'
+      case 'unsupported_capability': return '无法连接 Elasticsearch：服务器版本或发行版不受支持。'
+      case 'parse_error': return '无法连接 Elasticsearch：服务器响应格式无效。'
+    }
+  }
+  return '无法连接 Elasticsearch：请检查地址和网络。'
 }

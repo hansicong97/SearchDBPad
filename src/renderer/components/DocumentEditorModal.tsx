@@ -19,6 +19,7 @@ import {
   Form,
   Input,
   Modal,
+  Select,
   Space,
   Typography
 } from 'antd'
@@ -29,6 +30,8 @@ import {
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { useWorkspaceStore } from '../stores/workspace.store'
+import { useConnectionStore } from '../stores/connection.store'
+import { extractSchemaFields } from '../utils/mappingFields'
 import type { DocumentHit } from '@shared/ipc'
 // Side-effect import — wires Monaco workers + loader config before the
 // editor mounts. Safe to import multiple times.
@@ -58,6 +61,11 @@ export default function DocumentEditorModal({
 }: DocumentEditorModalProps): JSX.Element {
   const { message } = AntdApp.useApp()
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
+  const mapping = useWorkspaceStore((s) => s.mapping)
+  const capabilities = useWorkspaceStore((s) => s.capabilities)
+  const engineType = useConnectionStore((s) => s.connections.find((c) => c.id === activeConnectionId)?.engineType ?? 'elasticsearch')
+  const solr = engineType === 'solr'
+  const uniqueKey = extractSchemaFields(mapping)?.uniqueKey
   const createDocument = useWorkspaceStore((s) => s.createDocument)
   const updateDocument = useWorkspaceStore((s) => s.updateDocument)
 
@@ -66,6 +74,7 @@ export default function DocumentEditorModal({
   const [parseError, setParseError] = useState<string | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState<boolean>(false)
+  const [commitPolicy, setCommitPolicy] = useState<'auto' | 'commit' | 'softCommit' | 'none'>('auto')
 
   /** True only when the editor content parses as a JSON object (ES
    *  rejects arrays / scalars at the top level). */
@@ -97,10 +106,11 @@ export default function DocumentEditorModal({
     if (!open) return
     setSubmitError(null)
     setParseError(null)
+    setCommitPolicy('auto')
     if (mode === 'edit' && hit) {
-      setDocId(hit._id)
+      setDocId(hit.id ?? '')
       try {
-        setContent(JSON.stringify(hit._source ?? {}, null, 2))
+        setContent(JSON.stringify(hit.fields ?? {}, null, 2))
       } catch {
         setContent(EMPTY_SOURCE)
       }
@@ -122,12 +132,20 @@ export default function DocumentEditorModal({
   }
 
   const handleSubmit = async (): Promise<void> => {
-    if (!activeConnectionId) {
+    if (!activeConnectionId || !capabilities?.documentWrite) {
       setSubmitError('当前没有可用连接')
       return
     }
     if (!validation.ok || !validation.parsed) {
       setParseError(validation.error)
+      return
+    }
+    if (mode === 'edit' && !docId.trim()) {
+      setSubmitError('缺少文档 ID，无法编辑')
+      return
+    }
+    if (solr && uniqueKey && !docId.trim() && validation.parsed[uniqueKey] === undefined) {
+      setSubmitError(`请提供 ID 或在文档中填写 uniqueKey 字段 ${uniqueKey}`)
       return
     }
     setParseError(null)
@@ -140,13 +158,15 @@ export default function DocumentEditorModal({
             connectionId: activeConnectionId,
             index: indexName,
             id: trimmedId === '' ? undefined : trimmedId,
-            source: validation.parsed
+            source: validation.parsed,
+            commitPolicy: solr ? commitPolicy : undefined
           })
         : await updateDocument({
             connectionId: activeConnectionId,
             index: indexName,
             id: trimmedId,
-            source: validation.parsed
+            source: validation.parsed,
+            commitPolicy: solr ? commitPolicy : undefined
           })
     setSubmitting(false)
     // The store may have dropped the response because the user switched
@@ -158,8 +178,8 @@ export default function DocumentEditorModal({
     if (res.success && res.data) {
       message.success(
         mode === 'create'
-          ? `已创建文档 _id=${res.data.id}`
-          : `已更新文档 _id=${res.data.id}`
+          ? `已创建文档 ID=${res.data.id}`
+          : `已更新文档 ID=${res.data.id}`
       )
       onClose()
     } else {
@@ -170,9 +190,9 @@ export default function DocumentEditorModal({
   const title =
     mode === 'create'
       ? `新建文档 · ${indexName}`
-      : `编辑文档 · ${indexName} · _id=${hit?._id ?? docId}`
+      : `编辑文档 · ${indexName} · ID=${hit?.id ?? docId}`
 
-  const submitDisabled = !validation.ok || submitting
+  const submitDisabled = !validation.ok || submitting || !capabilities?.documentWrite
   const idEditable = mode === 'create'
 
   return (
@@ -211,10 +231,10 @@ export default function DocumentEditorModal({
         <Form.Item
           label={
             <Space size={4}>
-              <Text>_id</Text>
+              <Text>ID</Text>
               {mode === 'create' ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  (可选；留空时由 Elasticsearch 自动生成)
+                  {solr ? `(对应 Schema uniqueKey${uniqueKey ? `：${uniqueKey}` : ''}；也可在文档字段中填写)` : '(可选；留空时由服务器自动生成)'}
                 </Text>
               ) : (
                 <Text type="secondary" style={{ fontSize: 12 }}>
@@ -228,7 +248,7 @@ export default function DocumentEditorModal({
             value={docId}
             onChange={(e) => setDocId(e.target.value)}
             disabled={!idEditable}
-            placeholder={mode === 'create' ? '留空自动生成' : ''}
+            placeholder={mode === 'create' ? (solr ? '填写 uniqueKey 值，或在文档中提供' : '留空自动生成') : ''}
             allowClear={idEditable}
           />
         </Form.Item>
@@ -236,7 +256,7 @@ export default function DocumentEditorModal({
         <Form.Item
           label={
             <Space size={4}>
-              <Text>_source</Text>
+              <Text>文档字段</Text>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 (JSON 对象，提交前会校验)
               </Text>
@@ -272,6 +292,13 @@ export default function DocumentEditorModal({
             />
           </div>
         </Form.Item>
+
+        {solr ? <Form.Item label="提交策略" extra="自动/不提交会等待 Solr 的自动提交策略，结果可能不会立即可见。">
+          <Select value={commitPolicy} onChange={(v) => setCommitPolicy(v)} options={[
+            { value: 'auto', label: '自动' }, { value: 'commit', label: 'commit' },
+            { value: 'softCommit', label: 'softCommit' }, { value: 'none', label: '不提交' }
+          ]} />
+        </Form.Item> : null}
 
         {parseError ? (
           <Alert

@@ -2,9 +2,12 @@ ai-dev-steps
 node_modules
 dist
 release
-build
+build/*
 !build/installer.nsh
 .DS_Store
 *.log
 .vscode
 .idea
+.claude
+.codex
+.cursor

@@ -1,10 +1,10 @@
 /// <reference types="vite/client" />
 
-import type { EsApi } from '../../preload'
+import type { SearchApi } from '../../preload'
 
 declare global {
   interface Window {
-    esApi: EsApi
+    searchApi: SearchApi
     /** Set by `monacoEnv.ts` so Monaco's web workers can be loaded. */
     MonacoEnvironment?: {
       getWorker: (workerId: string, label: string) => Worker

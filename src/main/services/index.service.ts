@@ -1,3 +1,4 @@
+import { requireOperation } from '../search/adapter.types'
 /**
  * Index list / mapping / settings / create / delete.
  *
@@ -13,6 +14,7 @@
  *  `formatNumber` / table render already handle. */
 
 import { resolveAdapterByConnectionId } from './searchEngine.service'
+import { toPublicSearchError } from '../search/errors'
 import type {
   ApiResponse,
   EsIndexInfo,
@@ -37,12 +39,8 @@ import type {
   ShardRelocateRequest,
   ShardRerouteResult
 } from '../../shared/ipc'
-import type { SearchConnection, SearchIndexInfo } from '../../shared/searchEngine'
+import type { SearchConnection, SearchIndexInfo, SearchResourceInfo } from '../../shared/searchEngine'
 import type { CreateIndexInput, SearchEngineAdapter } from '../search/adapter.types'
-
-function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
 
 function toInt(v: string | undefined, fallback = 0): number {
   if (v === undefined || v === null || v === '') return fallback
@@ -74,13 +72,37 @@ function searchInfoToEsIndex(info: SearchIndexInfo): EsIndexInfo | null {
 
 /** Convert a thrown error into a short, user-friendly message that
  *  matches the wording the renderer was used to under the SDK path. */
-function describeIndexError(err: unknown, index: string): string {
-  if (err && typeof err === 'object' && 'status' in err) {
-    const status = (err as { status?: number }).status
-    if (status === 404) return `索引 "${index}" 不存在`
-    if (status === 400) return `索引名无效: ${index}`
+function describeIndexError(err: unknown, operation: string) {
+  const safe = toPublicSearchError(err, operation)
+  if (safe.code === 'resource_not_found') safe.message = '请求的索引或资源不存在，请刷新后重试'
+  else if (safe.code === 'invalid_request' || safe.code === 'parse_error') safe.message = '索引名或请求参数无效，请检查输入'
+  return safe
+}
+
+/**
+ * The original index IPC predates the engine-neutral resource contract. Keep
+ * its Elasticsearch-shaped result for existing renderer callers, but use the
+ * generic catalog when an adapter (for example Solr) exposes collections or
+ * cores instead of `listIndices`.
+ * Follow-up: move the renderer catalog to `resource:list` / SearchResourceInfo
+ * before adding resource-specific management. Collections and cores must not
+ * acquire index semantics through this compatibility projection.
+ */
+async function listSearchResources(
+  connection: SearchConnection,
+  adapter: SearchEngineAdapter
+): Promise<SearchIndexInfo[]> {
+  if (typeof adapter.listIndices === 'function') {
+    return requireOperation(adapter, 'listIndices')(connection)
   }
-  return errMsg(err)
+
+  const resources = await requireOperation(adapter, 'listResources')(connection)
+  return resources.map((resource: SearchResourceInfo) => ({
+    name: resource.name,
+    health: resource.health,
+    status: resource.status,
+    docsCount: resource.documentCount
+  }))
 }
 
 export async function listIndices(
@@ -88,7 +110,7 @@ export async function listIndices(
 ): Promise<ApiResponse<IndexListResult>> {
   try {
     const { connection, adapter } = await resolveAdapterByConnectionId(connectionId)
-    const indices = await adapter.listIndices(connection)
+    const indices = await listSearchResources(connection, adapter)
     const esIndices = indices
       .map(searchInfoToEsIndex)
       .filter((x): x is EsIndexInfo => x !== null)
@@ -102,7 +124,7 @@ export async function listIndices(
       }
     }
   } catch (err) {
-    return { success: false, error: { message: errMsg(err) } }
+    return { success: false, error: toPublicSearchError(err, 'index:list') }
   }
 }
 
@@ -112,13 +134,25 @@ export async function getIndexMapping(
 ): Promise<ApiResponse<IndexMappingResult>> {
   try {
     const { connection, adapter } = await resolveAdapterByConnectionId(connectionId)
-    const mapping = await adapter.getIndexMapping(connection, index)
+    let mapping: unknown
+    if (typeof adapter.getIndexMapping === 'function') {
+      mapping = await requireOperation(adapter, 'getIndexMapping')(connection, index)
+    } else {
+      // Solr and future collection-based engines expose schema through the
+      // generic capability. Preserve the raw response when available so the
+      // existing mapping panel can still inspect engine-native JSON.
+      const schema = await requireOperation(adapter, 'getSchema')(connection, index)
+      mapping = schema.raw ?? {
+        fields: schema.fields,
+        ...(schema.uniqueKey ? { uniqueKey: schema.uniqueKey } : {})
+      }
+    }
     return {
       success: true,
       data: { connectionId, index, mapping: mapping as Record<string, unknown> }
     }
   } catch (err) {
-    return { success: false, error: { message: describeIndexError(err, index) } }
+    return { success: false, error: describeIndexError(err, 'index:mapping') }
   }
 }
 
@@ -128,13 +162,13 @@ export async function getIndexSettings(
 ): Promise<ApiResponse<IndexSettingsResult>> {
   try {
     const { connection, adapter } = await resolveAdapterByConnectionId(connectionId)
-    const settings = await adapter.getIndexSettings(connection, index)
+    const settings = await requireOperation(adapter, 'getIndexSettings')(connection, index)
     return {
       success: true,
       data: { connectionId, index, settings: settings as Record<string, unknown> }
     }
   } catch (err) {
-    return { success: false, error: { message: describeIndexError(err, index) } }
+    return { success: false, error: describeIndexError(err, 'index:settings') }
   }
 }
 
@@ -150,12 +184,12 @@ export async function createIndex(
       settings: req.settings,
       mappings: req.mappings
     }
-    const data = await adapter.createIndex(connection, input)
+    const data = await requireOperation(adapter, 'createIndex')(connection, input)
     return { success: true, data }
   } catch (err) {
     return {
       success: false,
-      error: { message: describeIndexError(err, req.index) }
+      error: describeIndexError(err, 'index:create')
     }
   }
 }
@@ -167,12 +201,12 @@ export async function deleteIndex(
     const { connection, adapter } = await resolveAdapterByConnectionId(
       req.connectionId
     )
-    const data = await adapter.deleteIndex(connection, req.index)
+    const data = await requireOperation(adapter, 'deleteIndex')(connection, req.index)
     return { success: true, data }
   } catch (err) {
     return {
       success: false,
-      error: { message: describeIndexError(err, req.index) }
+      error: describeIndexError(err, 'index:delete')
     }
   }
 }
@@ -180,9 +214,8 @@ export async function deleteIndex(
 // V0.3.1 A-1: close / open lifecycle. The renderer treats close as a
 // destructive-with-side-effects operation (the index can no longer be
 // read or written until reopened), so the UI wraps the call in a
-// Popconfirm. We still surface every server-side error verbatim via
-// `describeIndexError` so 404s / 400s show up as actionable messages
-// instead of raw stack traces.
+// Popconfirm. Errors go through `describeIndexError`, preserving an
+// actionable summary without exposing raw server responses.
 
 export async function closeIndex(
   req: IndexLifecycleRequest
@@ -191,12 +224,12 @@ export async function closeIndex(
     const { connection, adapter } = await resolveAdapterByConnectionId(
       req.connectionId
     )
-    const data = await adapter.closeIndex(connection, req.index)
+    const data = await requireOperation(adapter, 'closeIndex')(connection, req.index)
     return { success: true, data }
   } catch (err) {
     return {
       success: false,
-      error: { message: describeIndexError(err, req.index) }
+      error: describeIndexError(err, 'index:close')
     }
   }
 }
@@ -208,12 +241,12 @@ export async function openIndex(
     const { connection, adapter } = await resolveAdapterByConnectionId(
       req.connectionId
     )
-    const data = await adapter.openIndex(connection, req.index)
+    const data = await requireOperation(adapter, 'openIndex')(connection, req.index)
     return { success: true, data }
   } catch (err) {
     return {
       success: false,
-      error: { message: describeIndexError(err, req.index) }
+      error: describeIndexError(err, 'index:open')
     }
   }
 }
@@ -221,9 +254,8 @@ export async function openIndex(
 // V0.3.2 A-2: dynamic-settings edit. The renderer passes the raw
 // settings JSON (typically `{ index: { ... } }`); the adapter
 // forwards it as-is to `PUT /{index}/_settings`. ES 6.x behaviour
-// around static settings differs slightly from later majors; we
-// surface the raw error so the user sees exactly why the call
-// failed instead of swallowing it.
+// around static settings differs slightly from later majors; the service
+// maps failures to the shared safe error envelope at the IPC boundary.
 
 export async function updateIndexSettings(
   req: IndexUpdateSettingsRequest
@@ -232,7 +264,7 @@ export async function updateIndexSettings(
     const { connection, adapter } = await resolveAdapterByConnectionId(
       req.connectionId
     )
-    const data = await adapter.updateIndexSettings(
+    const data = await requireOperation(adapter, 'updateIndexSettings')(
       connection,
       req.index,
       req.settings
@@ -241,15 +273,14 @@ export async function updateIndexSettings(
   } catch (err) {
     return {
       success: false,
-      error: { message: describeIndexError(err, req.index) }
+      error: describeIndexError(err, 'index:updateSettings')
     }
   }
 }
 
 // V0.3.3 A-3: append fields to an existing index mapping. ES rejects
 // any attempt to change an existing field's type with a 400; we
-// surface that message verbatim so the user can immediately see
-// which field conflicts.
+// return a safe, actionable summary so server details do not cross IPC.
 
 export async function updateIndexMapping(
   req: IndexUpdateMappingRequest
@@ -258,7 +289,7 @@ export async function updateIndexMapping(
     const { connection, adapter } = await resolveAdapterByConnectionId(
       req.connectionId
     )
-    const data = await adapter.updateIndexMapping(
+    const data = await requireOperation(adapter, 'updateIndexMapping')(
       connection,
       req.index,
       req.mapping
@@ -267,7 +298,7 @@ export async function updateIndexMapping(
   } catch (err) {
     return {
       success: false,
-      error: { message: describeIndexError(err, req.index) }
+      error: describeIndexError(err, 'index:updateMapping')
     }
   }
 }
@@ -276,6 +307,7 @@ export async function updateIndexMapping(
 
 async function runIndexMaintenance(
   req: IndexMaintenanceRequest,
+  operation: string,
   invoke: (
     adapter: SearchEngineAdapter,
     connection: SearchConnection
@@ -290,7 +322,7 @@ async function runIndexMaintenance(
   } catch (err) {
     return {
       success: false,
-      error: { message: describeIndexError(err, req.index) }
+      error: describeIndexError(err, operation)
     }
   }
 }
@@ -298,32 +330,32 @@ async function runIndexMaintenance(
 export function refreshIndex(
   req: IndexMaintenanceRequest
 ): Promise<ApiResponse<IndexMaintenanceResult>> {
-  return runIndexMaintenance(req, (adapter, connection) =>
-    adapter.refreshIndex(connection, req.index)
+  return runIndexMaintenance(req, 'index:refresh', (adapter, connection) =>
+    requireOperation(adapter, 'refreshIndex')(connection, req.index)
   )
 }
 
 export function flushIndex(
   req: IndexMaintenanceRequest
 ): Promise<ApiResponse<IndexMaintenanceResult>> {
-  return runIndexMaintenance(req, (adapter, connection) =>
-    adapter.flushIndex(connection, req.index)
+  return runIndexMaintenance(req, 'index:flush', (adapter, connection) =>
+    requireOperation(adapter, 'flushIndex')(connection, req.index)
   )
 }
 
 export function forceMergeIndex(
   req: IndexMaintenanceRequest
 ): Promise<ApiResponse<IndexMaintenanceResult>> {
-  return runIndexMaintenance(req, (adapter, connection) =>
-    adapter.forceMergeIndex(connection, req.index, req.maxNumSegments)
+  return runIndexMaintenance(req, 'index:forceMerge', (adapter, connection) =>
+    requireOperation(adapter, 'forceMergeIndex')(connection, req.index, req.maxNumSegments)
   )
 }
 
 export function clearIndexCache(
   req: IndexMaintenanceRequest
 ): Promise<ApiResponse<IndexMaintenanceResult>> {
-  return runIndexMaintenance(req, (adapter, connection) =>
-    adapter.clearIndexCache(connection, req.index)
+  return runIndexMaintenance(req, 'index:clearCache', (adapter, connection) =>
+    requireOperation(adapter, 'clearIndexCache')(connection, req.index)
   )
 }
 
@@ -342,7 +374,7 @@ export async function getIndexShards(
     const { connection, adapter } = await resolveAdapterByConnectionId(
       connectionId
     )
-    const shards: ShardInfo[] = await adapter.listIndexShards(connection, index)
+    const shards: ShardInfo[] = await requireOperation(adapter, 'listIndexShards')(connection, index)
     return {
       success: true,
       data: { connectionId, index, shards }
@@ -350,7 +382,7 @@ export async function getIndexShards(
   } catch (err) {
     return {
       success: false,
-      error: { message: describeIndexError(err, index) }
+      error: describeIndexError(err, 'shard:list')
     }
   }
 }
@@ -362,7 +394,7 @@ export async function relocateShard(
     const { connection, adapter } = await resolveAdapterByConnectionId(
       req.connectionId
     )
-    const data = await adapter.relocateShard(
+    const data = await requireOperation(adapter, 'relocateShard')(
       connection,
       req.index,
       req.shard,
@@ -373,7 +405,7 @@ export async function relocateShard(
   } catch (err) {
     return {
       success: false,
-      error: { message: describeIndexError(err, req.index) }
+      error: describeIndexError(err, 'shard:relocate')
     }
   }
 }
@@ -385,7 +417,7 @@ export async function cancelShardAllocation(
     const { connection, adapter } = await resolveAdapterByConnectionId(
       req.connectionId
     )
-    const data = await adapter.cancelShardAllocation(
+    const data = await requireOperation(adapter, 'cancelShardAllocation')(
       connection,
       req.index,
       req.shard,
@@ -396,7 +428,7 @@ export async function cancelShardAllocation(
   } catch (err) {
     return {
       success: false,
-      error: { message: describeIndexError(err, req.index) }
+      error: describeIndexError(err, 'shard:cancelAllocation')
     }
   }
 }

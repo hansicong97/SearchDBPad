@@ -66,6 +66,7 @@ export default function CreateIndexModal({
 }: Props): JSX.Element {
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
   const indexList = useWorkspaceStore((s) => s.indices)
+  const capabilities = useWorkspaceStore((s) => s.capabilities)
   const createIndex = useWorkspaceStore((s) => s.createIndex)
 
   const [name, setName] = useState('')
@@ -85,7 +86,7 @@ export default function CreateIndexModal({
   }, [open])
 
   const indexSuggestions = useMemo(
-    () => indexList.map((i) => ({ value: i.index })),
+    () => indexList.filter((resource) => resource.kind === 'index').map((resource) => ({ value: resource.name })),
     [indexList]
   )
 
@@ -111,10 +112,11 @@ export default function CreateIndexModal({
 
   const ready = useMemo(() => {
     if (!activeConnectionId) return false
+    if (capabilities?.indexManagement !== true) return false
     if (!name.trim()) return false
     if (settingsError || mappingsError) return false
     return true
-  }, [activeConnectionId, name, settingsError, mappingsError])
+  }, [activeConnectionId, capabilities, name, settingsError, mappingsError])
 
   /* V0.3.10 F-3 (revised): the modal no longer handles file picks.
    *  Both commit buttons go through the same create + intent path;
@@ -123,7 +125,12 @@ export default function CreateIndexModal({
   const handleSubmit = async (
     intent: { tab: IndexDetailTabKey }
   ): Promise<void> => {
-    if (!ready || !activeConnectionId) return
+    if (!activeConnectionId) return
+    if (capabilities?.indexManagement !== true) {
+      setErrorMsg('当前搜索引擎不支持索引管理')
+      return
+    }
+    if (!ready) return
     setErrorMsg(null)
     setSubmitting(true)
     try {

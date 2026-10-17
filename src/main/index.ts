@@ -1,7 +1,7 @@
 /**
  * Electron main process entry.
  *
- * Phase 4 responsibilities:
+ * Main-process responsibilities:
  *  - Create a single BrowserWindow with secure defaults.
  *  - Load the Vite dev server in development, the built index.html in production.
  *  - Register IPC handlers for the app info channels (phase 1), the
@@ -10,8 +10,8 @@
  *    (phase 4). All Elasticsearch calls run exclusively in the main
  *    process; the renderer never sees the network.
  *
- * Business features beyond phase 4 (document query, CRUD, import/export)
- * are NOT implemented here. They will be added in later phases.
+ * IPC handlers delegate to engine-neutral services and optional adapter
+ * capabilities; engine-specific request shapes remain inside adapters.
  */
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
@@ -24,6 +24,7 @@ import type {
   ExportCancelResult,
   ExportPickPathRequest,
   ExportPickPathResult,
+  ExportFormat,
   ImportCancelRequest,
   ImportCancelResult,
   ImportFormat,
@@ -43,6 +44,11 @@ import {
 } from './services/connection.service'
 import { getClusterHealth, getClusterInfo } from './services/cluster.service'
 import { searchEngineDetect } from './services/searchEngine.service'
+import { listEnabledAdapters } from './search/adapterRegistry'
+import { getCapabilities, listResources, getResourceSchema, executeTask, inspectTask } from './services/resource.service'
+import { handleResourceQuery, handleRequestCancel } from './services/resourceIpc.service'
+import { cancelSenderRequests } from './search/requestRegistry'
+import type { RequestCancelRequest, ResourceRequest, SearchQueryRequest, EngineTaskRequest, EngineTaskRef } from '../shared/ipc'
 import {
   closeIndex,
   createIndex,
@@ -68,8 +74,14 @@ import {
   updateDocument
 } from './services/document.service'
 import { runExport } from './services/export.service'
+import {
+  exportPathKey,
+  isExportFormat,
+  isUsableExportPath,
+  sanitizeExportFileStem
+} from './services/exportPath'
 import { detectFormat, importPreview, runImport } from './services/import.service'
-import { markCancelled, isJobActive } from './services/jobCancel.service'
+import { cancelAllJobs, hasActiveJobs, markCancelled, isJobActive, waitForAllJobs } from './services/jobCancel.service'
 import {
   addAlias,
   deleteAlias,
@@ -89,6 +101,23 @@ import {
 } from './services/dslFavorite.service'
 
 const isDev = process.env.NODE_ENV === 'development'
+const approvedExportPaths = new Map<number, Set<string>>()
+
+function rememberApprovedExportPath(senderId: number, filePath: string): void {
+  const paths = approvedExportPaths.get(senderId) ?? new Set<string>()
+  paths.add(exportPathKey(filePath))
+  approvedExportPaths.set(senderId, paths)
+}
+
+function consumeApprovedExportPath(senderId: number, filePath: unknown): boolean {
+  if (!isUsableExportPath(filePath)) return false
+  const paths = approvedExportPaths.get(senderId)
+  const key = exportPathKey(filePath)
+  if (!paths?.has(key)) return false
+  paths.delete(key)
+  if (paths.size === 0) approvedExportPaths.delete(senderId)
+  return true
+}
 
 function resolveRendererEntry(): { url?: string; file?: string } {
   if (isDev) {
@@ -116,6 +145,17 @@ function createWindow(): BrowserWindow {
       preload: path.join(__dirname, '..', 'preload', 'index.js')
     }
   })
+
+  const senderId = win.webContents.id
+  const cancelWindowWork = (): void => {
+    approvedExportPaths.delete(senderId)
+    cancelSenderRequests(senderId)
+    // The application currently owns one workspace window and one job center.
+    cancelAllJobs()
+  }
+  win.on('close', cancelWindowWork)
+  win.webContents.on('destroyed', cancelWindowWork)
+  win.webContents.on('render-process-gone', cancelWindowWork)
 
   // Open external links in the user's browser, never inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -283,10 +323,26 @@ function registerIpcHandlers(): void {
   )
 
   /* Document export (phase 8) */
-  ipcMain.handle(IpcChannels.ExportPickSavePath, (_evt, req: ExportPickPathRequest) =>
-    pickExportSavePath(req)
-  )
-  ipcMain.handle(IpcChannels.ExportExecute, (_evt, req) => runExport(req))
+  ipcMain.handle(IpcChannels.ExportPickSavePath, async (evt, req: ExportPickPathRequest) => {
+    const response = await pickExportSavePath(req)
+    if (response.success && response.data?.outputPath) {
+      rememberApprovedExportPath(evt.sender.id, response.data.outputPath)
+    }
+    return response
+  })
+  ipcMain.handle(IpcChannels.ExportExecute, (evt, req) => {
+    if (!consumeApprovedExportPath(evt.sender.id, req?.outputPath)) {
+      return {
+        success: false,
+        error: {
+          code: 'invalid_request',
+          operation: 'export:run',
+          message: '请先通过保存对话框选择导出文件'
+        }
+      }
+    }
+    return runExport(req)
+  })
   ipcMain.handle(IpcChannels.ExportCancel, (_evt, req: ExportCancelRequest) =>
     cancelExport(req)
   )
@@ -301,10 +357,21 @@ function registerIpcHandlers(): void {
     cancelImport(req)
   )
 
-  /* Search engine metadata (V0.3.0 §10.2) */
+  /* Search engine metadata */
   ipcMain.handle(IpcChannels.SearchEngineDetect, (_evt, connectionId: string) =>
     searchEngineDetect(connectionId)
   )
+  ipcMain.handle(IpcChannels.SearchEngineList, () => ({ success: true, data: { manifests: listEnabledAdapters() } }))
+  ipcMain.handle(IpcChannels.SearchEngineCapabilities, (_evt, connectionId: string) => getCapabilities(connectionId))
+  ipcMain.handle(IpcChannels.ResourceList, (_evt, connectionId: string) => listResources(connectionId))
+  ipcMain.handle(IpcChannels.ResourceSchema, (_evt, request: ResourceRequest) => getResourceSchema(request))
+  ipcMain.handle(IpcChannels.ResourceQuery, (evt, request: SearchQueryRequest) =>
+    handleResourceQuery(evt.sender.id, request)
+  )
+  ipcMain.handle(IpcChannels.RequestCancel, (evt, request: RequestCancelRequest) => handleRequestCancel(evt.sender.id, request))
+  ipcMain.handle(IpcChannels.TaskExecute, (_evt, request: EngineTaskRequest) => executeTask(request))
+  ipcMain.handle(IpcChannels.TaskStatus, (_evt, request: EngineTaskRef) => inspectTask(request))
+  ipcMain.handle(IpcChannels.TaskCancel, (_evt, request: EngineTaskRef) => inspectTask(request, true))
 }
 
 async function cancelExport(
@@ -335,13 +402,23 @@ async function cancelImport(
 async function pickExportSavePath(
   req: ExportPickPathRequest
 ): Promise<ApiResponse<ExportPickPathResult>> {
-  const ext = req.format
+  if (!isExportFormat(req?.format)) {
+    return {
+      success: false,
+      error: {
+        code: 'invalid_request',
+        operation: 'export:pickSavePath',
+        message: '请求参数无效，请检查输入'
+      }
+    }
+  }
+  const ext: ExportFormat = req.format
   const stamp = new Date()
     .toISOString()
     .replace(/[-:]/g, '')
     .replace(/\..+$/, '')
     .replace('T', '_')
-  const defaultName = `${req.index}_${stamp}.${ext}`
+  const defaultName = `${sanitizeExportFileStem(req.index)}_${stamp}.${ext}`
   const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
   const result = await dialog.showSaveDialog(win ?? undefined, {
     title: '导出查询结果',
@@ -544,4 +621,19 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+let quitPending = false
+app.on('before-quit', (event) => {
+  if (!hasActiveJobs()) return
+  event.preventDefault()
+  if (quitPending) return
+  quitPending = true
+  cancelAllJobs()
+  // Keep the main process alive until streams, scrolls and temporary files
+  // have been released by the task finally blocks.
+  void waitForAllJobs().then(() => {
+    quitPending = false
+    app.quit()
+  })
 })

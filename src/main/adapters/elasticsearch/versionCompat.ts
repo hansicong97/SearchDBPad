@@ -11,6 +11,7 @@
  */
 
 import type { SearchEngineServerInfo } from '../../../shared/searchEngine'
+import { getElasticsearchCapabilities } from './capabilities'
 
 /** Body shape accepted by `PUT /{index}` / `PUT /{index}/_mapping`.
  *  V0.3.3 splits `UpdateMappingBody` out so the `_doc` wrapping for
@@ -40,7 +41,7 @@ export function normalizeCreateIndexBodyForEsVersion(
   body: CreateIndexBody,
   info: SearchEngineServerInfo
 ): CreateIndexBody {
-  if (info.major > 6) return body
+  if (!getElasticsearchCapabilities(info).requiresDocTypeForMapping) return body
   if (!body || typeof body !== 'object') return body
   const mappings = body.mappings
   if (!mappings || typeof mappings !== 'object') return body
@@ -63,7 +64,7 @@ export function normalizeUpdateMappingBodyForEsVersion(
   body: UpdateMappingBody,
   info: SearchEngineServerInfo
 ): Record<string, unknown> {
-  if (info.major > 6) return body
+  if (!getElasticsearchCapabilities(info).requiresDocTypeForMapping) return body
   if (!body || typeof body !== 'object') return body
   if ('_doc' in body) return body
   // ES 6.x: wrap under `_doc` and forward only `properties` (plus any

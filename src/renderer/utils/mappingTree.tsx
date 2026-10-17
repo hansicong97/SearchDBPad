@@ -35,6 +35,7 @@
 import type { Key } from 'react'
 import type { TreeDataNode } from 'antd'
 import { Tag } from 'antd'
+import { extractSchemaFields, type MappingField } from './mappingFields'
 
 /** Field-type → tag color. Matches the visual conventions used by
  *  Kibana / Dev Tools: blue for the common "term-ish" types, purple
@@ -120,6 +121,23 @@ function walkProps(
   })
 }
 
+function findTopLevelProperties(
+  mappings: Record<string, unknown>
+): Record<string, unknown> | null {
+  if (mappings.properties && typeof mappings.properties === 'object') {
+    return mappings.properties as Record<string, unknown>
+  }
+  // Elasticsearch 6.x keeps properties under a document type.
+  for (const value of Object.values(mappings)) {
+    if (!value || typeof value !== 'object') continue
+    const candidate = (value as Record<string, unknown>).properties
+    if (candidate && typeof candidate === 'object') {
+      return candidate as Record<string, unknown>
+    }
+  }
+  return null
+}
+
 /** Render a tree node title as field name + type tag. Kept tiny
  *  so the antd Tree doesn't need to memoize wrappers — the title
  *  is a stable React element for a given (name, type, multiField)
@@ -140,6 +158,32 @@ function renderTitle(name: string, type: string, multiField: boolean) {
   )
 }
 
+function renderSchemaTitle(field: MappingField) {
+  return (
+    <span>
+      <span style={{ marginRight: 6 }}>{field.path}</span>
+      <Tag color={colorForType(field.type)} style={{ margin: 0 }}>
+        {field.type}
+      </Tag>
+      {field.isUniqueKey ? (
+        <Tag color="gold" style={{ margin: 0, marginLeft: 4 }}>
+          uniqueKey
+        </Tag>
+      ) : null}
+      {field.required ? (
+        <Tag color="red" style={{ margin: 0, marginLeft: 4 }}>
+          required
+        </Tag>
+      ) : null}
+      {field.multiValued ? (
+        <Tag color="cyan" style={{ margin: 0, marginLeft: 4 }}>
+          multi-valued
+        </Tag>
+      ) : null}
+    </span>
+  )
+}
+
 /** Convert a `_mapping` payload to an `antd.Tree` `treeData` array.
  *  Returns `[]` when the payload is missing or malformed so callers
  *  can render an empty-state placeholder directly.
@@ -151,14 +195,22 @@ export function mappingToTreeData(
   mapping: Record<string, unknown> | null | undefined
 ): TreeDataNode[] {
   if (!mapping || typeof mapping !== 'object') return []
+  const schema = extractSchemaFields(mapping)
+  if (schema) {
+    return schema.fields.map((field) => ({
+      key: field.path,
+      title: renderSchemaTitle(field),
+      isLeaf: true
+    }))
+  }
   for (const key of Object.keys(mapping)) {
     const idx = mapping[key]
     if (!idx || typeof idx !== 'object') continue
     const mappings = (idx as Record<string, unknown>).mappings
     if (!mappings || typeof mappings !== 'object') continue
-    const props = (mappings as Record<string, unknown>).properties
-    if (!props || typeof props !== 'object') continue
-    return walkProps(props as Record<string, unknown>, '')
+    const props = findTopLevelProperties(mappings as Record<string, unknown>)
+    if (!props) continue
+    return walkProps(props, '')
   }
   return []
 }

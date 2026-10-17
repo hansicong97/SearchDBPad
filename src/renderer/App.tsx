@@ -25,7 +25,7 @@ import { useThemeStore } from './stores/theme.store'
 import type {
   ConnectionFolder,
   ConnectionTestResult,
-  EsConnection
+  SearchConnection
 } from '@shared/ipc'
 
 const { Content, Footer, Sider } = Layout
@@ -68,7 +68,7 @@ function App(): JSX.Element {
   const themeMode = useThemeStore((s) => s.mode)
   const isDark = themeMode === 'dark'
 
-  const [editing, setEditing] = useState<EsConnection | null>(null)
+  const [editing, setEditing] = useState<SearchConnection | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [testingId, setTestingId] = useState<string | null>(null)
@@ -106,7 +106,7 @@ function App(): JSX.Element {
     setFormOpen(true)
   }
 
-  const openEdit = (conn: EsConnection): void => {
+  const openEdit = (conn: SearchConnection): void => {
     setEditing(conn)
     setFormOpen(true)
   }
@@ -150,7 +150,7 @@ function App(): JSX.Element {
   )
 
   const handleRowTest = useCallback(
-    async (conn: EsConnection): Promise<void> => {
+    async (conn: SearchConnection): Promise<void> => {
       setTestingId(conn.id)
       const outcome = await testConnection({
         id: conn.id,
@@ -173,7 +173,7 @@ function App(): JSX.Element {
   )
 
   const handleDelete = useCallback(
-    (conn: EsConnection): void => {
+    (conn: SearchConnection): void => {
       modal.confirm({
         title: '确定删除该连接？',
         content: `删除后无法恢复：${conn.name}`,
@@ -193,7 +193,7 @@ function App(): JSX.Element {
   )
 
   const handleActivate = useCallback(
-    (conn: EsConnection) => {
+    (conn: SearchConnection) => {
       setActive(conn.id)
     },
     [setActive]
@@ -246,7 +246,7 @@ function App(): JSX.Element {
   // keeps the workspace as-is (folder changes don't affect ES
   // session state), so no clearing is needed.
   const handleMoveToFolder = useCallback(
-    async (conn: EsConnection, folderId: string | null): Promise<void> => {
+    async (conn: SearchConnection, folderId: string | null): Promise<void> => {
       const ok = await moveConnectionToFolder(conn.id, folderId)
       if (ok) {
         message.success(`已将 "${conn.name}" 移动到目录`)

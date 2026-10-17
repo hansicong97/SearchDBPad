@@ -1,53 +1,150 @@
-/**
- * Search Engine Adapter registry.
- *
- * V0.3.0 §6: this is the single entry point the service layer uses to
- *  obtain an adapter. It dispatches by `SearchConnection.engineType`
- *  and lazy-loads each adapter via dynamic `import()` so the bundle
- *  stays clean for the "no Solr" build of the app.
- *
- * Why dynamic import:
- *  - Each adapter is its own module under `src/main/adapters/<engine>`.
- *  - A future `dist:mac` or `dist:all` build can drop unused adapter
- *    folders via electron-builder `files` globbing without touching
- *    this file's source.
- *  - Static `import { elasticsearchAdapter } from '../adapters/...'`
- *    would defeat that and would also force every adapter to be in
- *    the typecheck graph even before it ships.
- */
+/** Built-in adapter registration and capability validation.
+ *  External code loading, installation and permissions are deliberately outside
+ *  this registry. A manifest describes product support, not a download URL. */
+import { elasticsearchManifest } from '../adapters/elasticsearch'
+import { opensearchManifest } from '../adapters/opensearch'
+import { solrManifest } from '../adapters/solr'
+import { emptySearchEngineCapabilities } from '../../shared/searchEngine'
+import type { SearchEngineCapabilities, SearchEngineManifest, SearchEngineType } from '../../shared/searchEngine'
+import type { AdapterOperations, SearchEngineAdapter } from './adapter.types'
+import { SearchEngineError } from './errors'
 
-import type { SearchEngineType } from '../../shared/searchEngine'
-import type { SearchEngineAdapter } from './adapter.types'
+type AdapterFactory = () => SearchEngineAdapter | Promise<SearchEngineAdapter>
+interface Registration {
+  manifest: SearchEngineManifest
+  factory: AdapterFactory
+  instance?: Promise<SearchEngineAdapter>
+}
 
-/** Return the adapter for the given engine type.
- *
- *  Throws if the engine type is unrecognised or its adapter is not
- *  shipped in this build. Step 2 ships only `elasticsearch`; other
- *  literals will be rejected at the type system AND at runtime. */
-export async function getSearchEngineAdapter(
-  type: SearchEngineType
-): Promise<SearchEngineAdapter> {
-  switch (type) {
-    case 'elasticsearch': {
-      // Path is held in a variable so TypeScript does not try to
-      // resolve the module at typecheck time — the
-      // `src/main/adapters/elasticsearch/index.ts` file lands in
-      // V0.3.0 Step 3. Runtime resolution still happens against the
-      // real filesystem path. The try/catch turns a "Cannot find
-      // module" into the spec-required clear error message.
-      const adapterPath = '../adapters/elasticsearch'
-      try {
-        const mod = (await import(adapterPath)) as {
-          elasticsearchAdapter: SearchEngineAdapter
-        }
-        return mod.elasticsearchAdapter
-      } catch (err) {
-        throw new Error(
-          `Elasticsearch 适配器尚未实现 (V0.3.0 Step 3): ${(err as Error).message}`
-        )
-      }
+const registrations = new Map<SearchEngineType, Registration>()
+// `versionFeatures` is detected at runtime and carries feature flags rather
+// than adapter operations. Keep it out of the operation map so adding a new
+// version-derived flag cannot make every adapter pretend to implement an
+// operation for it.
+type OperationCapability = Exclude<keyof SearchEngineCapabilities, 'versionFeatures'>
+const capabilityOperations: Record<OperationCapability, Array<keyof AdapterOperations>> = {
+  resourceCatalog: ['listResources'],
+  documentQuery: ['queryDocuments'],
+  documentWrite: ['createDocument', 'updateDocument', 'deleteDocument'],
+  schema: ['getSchema'],
+  indexManagement: ['getClusterInfo', 'getClusterHealth', 'listIndices', 'getIndexMapping', 'getIndexSettings', 'searchDocuments'],
+  bulkTransfer: ['importDocuments', 'exportDocuments', 'exportBatches'],
+  tasks: ['executeTask', 'getTask', 'cancelTask'],
+  indices: ['listIndices', 'createIndex', 'deleteIndex'],
+  mappings: ['getIndexMapping', 'updateIndexMapping'],
+  settings: ['getIndexSettings', 'updateIndexSettings'],
+  aliases: ['listAliases', 'addAlias', 'deleteAlias'],
+  indexTemplates: ['listIndexTemplates', 'getIndexTemplate', 'createIndexTemplate', 'deleteIndexTemplate'],
+  dslQuery: ['queryDocuments'],
+  simpleQuery: ['queryDocuments'],
+  importExport: ['importDocuments', 'exportDocuments', 'exportBatches'],
+  openCloseIndex: ['openIndex', 'closeIndex'],
+  shardManagement: ['listIndexShards', 'relocateShard', 'cancelShardAllocation'],
+  maintenance: ['refreshIndex', 'flushIndex', 'forceMergeIndex', 'clearIndexCache'],
+  deepPagination: ['queryDocuments'],
+  reindex: ['executeTask', 'getTask', 'cancelTask'],
+  queryMutation: ['executeTask', 'getTask', 'cancelTask']
+}
+
+function copyManifest(manifest: SearchEngineManifest): SearchEngineManifest {
+  return {
+    ...manifest, supportedVersions: [...manifest.supportedVersions],
+    authSchemes: [...manifest.authSchemes], queryLanguages: [...manifest.queryLanguages],
+    transferFormats: [...manifest.transferFormats], capabilities: {
+      ...manifest.capabilities,
+      ...(manifest.capabilities.versionFeatures ? { versionFeatures: { ...manifest.capabilities.versionFeatures } } : {})
     }
-    default:
-      throw new Error(`当前版本未启用搜索引擎适配器: ${type}`)
   }
 }
+
+function validateManifest(manifest: SearchEngineManifest): void {
+  if (!manifest || manifest.manifestVersion !== 1) throw new TypeError('Unsupported adapter manifest version')
+  if (!['elasticsearch', 'opensearch', 'solr'].includes(manifest.type)) throw new TypeError('Unknown search engine type')
+  for (const value of [manifest.displayName, manifest.protocolFamily, manifest.adapterVersion]) {
+    if (typeof value !== 'string' || value.trim().length === 0) throw new TypeError('Adapter identity must not be empty')
+  }
+  if (!['index', 'collection', 'mixed'].includes(manifest.resourceModel)) throw new TypeError('Invalid adapter resource model')
+  if (!Array.isArray(manifest.supportedVersions) || manifest.supportedVersions.length === 0 ||
+    manifest.supportedVersions.some(version => typeof version !== 'string' || version.trim().length === 0)) {
+    throw new TypeError('Adapter supportedVersions must contain explicit version ranges')
+  }
+  if (!Array.isArray(manifest.authSchemes) || manifest.authSchemes.length === 0 ||
+    manifest.authSchemes.some(scheme => !['none', 'basic'].includes(scheme))) throw new TypeError('Invalid adapter authentication schemes')
+  if (!Array.isArray(manifest.queryLanguages) || manifest.queryLanguages.some(language => !['elasticsearch-dsl', 'solr'].includes(language))) {
+    throw new TypeError('Invalid adapter query languages')
+  }
+  if (!Array.isArray(manifest.transferFormats) || manifest.transferFormats.some(format => !['json', 'csv', 'ndjson'].includes(format))) {
+    throw new TypeError('Invalid adapter transfer formats')
+  }
+  for (const capability of Object.keys(emptySearchEngineCapabilities()) as Array<keyof SearchEngineCapabilities>) {
+    if (typeof manifest.capabilities?.[capability] !== 'boolean') throw new TypeError('Every adapter capability must be explicit')
+  }
+}
+
+function validateAdapter(adapter: SearchEngineAdapter, manifest: SearchEngineManifest): void {
+  if (!adapter || adapter.type !== manifest.type || adapter.displayName !== manifest.displayName) {
+    throw new TypeError('Adapter identity does not match its registered manifest')
+  }
+  validateManifest(adapter.manifest)
+  for (const key of ['type', 'displayName', 'protocolFamily', 'adapterVersion', 'resourceModel'] as const) {
+    if (adapter.manifest[key] !== manifest[key]) throw new TypeError('Adapter manifest does not match its registered identity')
+  }
+  for (const key of ['supportedVersions', 'authSchemes', 'queryLanguages', 'transferFormats'] as const) {
+    if (JSON.stringify(adapter.manifest[key]) !== JSON.stringify(manifest[key])) {
+      throw new TypeError('Adapter manifest does not match its registered contract')
+    }
+  }
+  for (const method of ['detect', 'testConnection', 'getCapabilities'] as const) {
+    if (typeof adapter[method] !== 'function') throw new TypeError('Adapter is missing a base operation: ' + method)
+  }
+  for (const capability of Object.keys(capabilityOperations) as OperationCapability[]) {
+    if (adapter.manifest.capabilities[capability] !== manifest.capabilities[capability]) {
+      throw new TypeError('Adapter capabilities do not match its registered manifest')
+    }
+    if (!manifest.capabilities[capability]) continue
+    for (const operation of capabilityOperations[capability]) {
+      if (typeof adapter[operation] !== 'function') {
+        throw new TypeError('Adapter capability ' + capability + ' is missing operation: ' + operation)
+      }
+    }
+  }
+}
+
+/** Register an in-process implementation; duplicate identities are rejected. */
+export function registerBuiltinAdapter(manifest: SearchEngineManifest, factory: AdapterFactory): void {
+  validateManifest(manifest)
+  if (typeof factory !== 'function') throw new TypeError('Adapter factory must be a function')
+  if (registrations.has(manifest.type)) throw new TypeError('Adapter already registered: ' + manifest.type)
+  registrations.set(manifest.type, { manifest: copyManifest(manifest), factory })
+}
+
+/** Only public metadata crosses IPC. Callers cannot mutate registered metadata. */
+export function listEnabledAdapters(): SearchEngineManifest[] {
+  return [...registrations.values()].map(entry => copyManifest(entry.manifest))
+}
+
+/** Resolve once per engine, coalescing concurrent callers. Failed initialization
+ *  is evicted so a transient module failure does not poison the app session. */
+export function resolveAdapter(type: SearchEngineType): Promise<SearchEngineAdapter> {
+  const entry = registrations.get(type)
+  if (!entry) return Promise.reject(new SearchEngineError({
+    engineType: type, code: 'unsupported_capability', message: '当前版本未启用此搜索引擎适配器。'
+  }))
+  if (!entry.instance) {
+    entry.instance = Promise.resolve().then(entry.factory).then(adapter => {
+      validateAdapter(adapter, entry.manifest)
+      return adapter
+    }).catch(error => {
+      entry.instance = undefined
+      throw error
+    })
+  }
+  return entry.instance
+}
+
+/** Internal alias retained while services adopt the generic registry name. */
+export const getSearchEngineAdapter = resolveAdapter
+
+registerBuiltinAdapter(elasticsearchManifest, async () => (await import('../adapters/elasticsearch')).elasticsearchAdapter)
+registerBuiltinAdapter(opensearchManifest, async () => (await import('../adapters/opensearch')).opensearchAdapter)
+registerBuiltinAdapter(solrManifest, async () => (await import('../adapters/solr')).solrAdapter)

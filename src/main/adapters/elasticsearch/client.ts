@@ -30,6 +30,7 @@ export interface ElasticsearchRequestOptions {
   ndjsonBody?: string
   responseType?: HttpResponseType
   timeoutMs?: number
+  signal?: AbortSignal
 }
 
 function buildAuthHeader(conn: SearchConnection): Record<string, string> {
@@ -64,13 +65,14 @@ export async function elasticsearchRequest<T = unknown>(
   const url = buildUrl(connection, options.path, options.query)
   const headers = buildAuthHeader(connection)
   return searchHttpRequest<T>({
-    engineType: 'elasticsearch',
+    engineType: connection.engineType,
     method: options.method,
     url,
     headers,
     body: options.body,
     rawBody: options.ndjsonBody,
     responseType: options.responseType,
-    timeoutMs: options.timeoutMs
+    timeoutMs: options.timeoutMs,
+    signal: options.signal
   })
 }

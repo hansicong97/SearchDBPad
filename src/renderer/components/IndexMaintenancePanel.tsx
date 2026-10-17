@@ -46,7 +46,7 @@ export default function IndexMaintenancePanel({
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
   const indices = useWorkspaceStore((s) => s.indices)
   const closed =
-    indices.find((item) => item.index === indexName)?.status === 'close'
+    indices.find((item) => item.name === indexName)?.status === 'close'
 
   const [acting, setActing] = useState<ActionKey | null>(null)
   const [maxNumSegments, setMaxNumSegments] = useState<number | null>(null)
@@ -71,12 +71,12 @@ export default function IndexMaintenancePanel({
     }
     const res =
       action === 'refresh'
-        ? await window.esApi.indices.refresh(req)
+        ? await window.searchApi.indices.refresh(req)
         : action === 'flush'
-          ? await window.esApi.indices.flush(req)
+          ? await window.searchApi.indices.flush(req)
           : action === 'forceMerge'
-            ? await window.esApi.indices.forceMerge(req)
-            : await window.esApi.indices.clearCache(req)
+            ? await window.searchApi.indices.forceMerge(req)
+            : await window.searchApi.indices.clearCache(req)
     setActing(null)
     if (!res.success || !res.data) {
       message.error(res.error?.message ?? `${ACTION_LABEL[action]} 失败`)

@@ -3,8 +3,8 @@
  *
  * A right-bottom floating action button that opens a drawer listing
  * the current-session import / export jobs. Subscribes once to
- * `window.esApi.importDocs.onProgress` and
- * `window.esApi.exportDocs.onProgress` and forwards every event
+ * `window.searchApi.importDocs.onProgress` and
+ * `window.searchApi.exportDocs.onProgress` and forwards every event
  * into `useJobTaskStore`, so the panels' own per-page progress
  * cards remain the source of truth for in-page feedback while this
  * component is the cross-page / background view.
@@ -59,6 +59,7 @@ const IMPORT_STAGE_LABEL: Record<string, string> = {
   clearing: '清空索引中',
   writing: '写入文档中',
   completed: '已完成',
+  cancelled: '已停止',
   failed: '失败'
 }
 
@@ -66,6 +67,7 @@ const EXPORT_STAGE_LABEL: Record<string, string> = {
   querying: '查询文档中',
   writing: '写入文件中',
   completed: '已完成',
+  cancelled: '已停止',
   failed: '失败'
 }
 
@@ -98,6 +100,9 @@ function statusTag(stage: JobTaskStage): JSX.Element {
   }
   if (stage === 'completed') {
     return <Tag color="success" icon={<CheckCircleOutlined />}>已完成</Tag>
+  }
+  if (stage === 'cancelled') {
+    return <Tag color="default" icon={<StopOutlined />}>已停止</Tag>
   }
   if (stage === 'failed') {
     return <Tag color="error" icon={<CloseCircleOutlined />}>失败</Tag>
@@ -155,7 +160,7 @@ function TaskRow({ task, onStop, onRemove }: TaskRowProps): JSX.Element {
     | 'exception'
     | 'active' = task.stage === 'completed'
     ? 'success'
-    : task.stage === 'failed' || task.stage === 'cancelling'
+    : task.stage === 'failed' || task.stage === 'cancelled' || task.stage === 'cancelling'
       ? 'exception'
       : percent !== null
         ? 'active'
@@ -298,12 +303,12 @@ export default function JobTaskFloatButton(): JSX.Element | null {
   // V0.3.10 F-5: single subscription to the main-process progress
   // events, fed straight into the store. The IPC channel names
   // are stable (see `IpcChannels` in `@shared/ipc`) and the
-  // `window.esApi` surface already wraps them in a typed callback.
+  // `window.searchApi` surface already wraps them in a typed callback.
   useEffect(() => {
-    const u1 = window.esApi.importDocs.onProgress((p) => {
+    const u1 = window.searchApi.importDocs.onProgress((p) => {
       upsertImportProgress(p)
     })
-    const u2 = window.esApi.exportDocs.onProgress((p) => {
+    const u2 = window.searchApi.exportDocs.onProgress((p) => {
       upsertExportProgress(p)
     })
     return () => {
@@ -313,7 +318,7 @@ export default function JobTaskFloatButton(): JSX.Element | null {
   }, [upsertImportProgress, upsertExportProgress])
 
   const hasFinished = tasks.some(
-    (t) => t.stage === 'completed' || t.stage === 'failed'
+    (t) => t.stage === 'completed' || t.stage === 'cancelled' || t.stage === 'failed'
   )
 
   const handleStop = async (task: JobTask): Promise<void> => {

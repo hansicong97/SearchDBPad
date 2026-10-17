@@ -25,7 +25,7 @@ import {
   getCachedServerInfo,
   setCachedServerInfo
 } from '../../search/serverVersionCache'
-import type { SearchConnection } from '../../../shared/searchEngine'
+import type { SearchConnection, SearchEngineServerInfo } from '../../../shared/searchEngine'
 import type {
   IndexTemplateGetResult,
   IndexTemplateListResult,
@@ -34,19 +34,21 @@ import type {
 
 /** ES 7.8 introduced composable templates. Anything older only
  *  supports the legacy `/_template` endpoint. */
-function isComposableSupported(major: number, minor: number): boolean {
+function isComposableSupported(info: SearchEngineServerInfo): boolean {
+  if (info.engineType === 'opensearch') return true
+  const {major, minor} = info
   if (major > 7) return true
   if (major < 7) return false
   return minor >= 8
 }
 
 function pickTemplateFlavor(
-  info: { major: number; minor: number },
+  info: SearchEngineServerInfo,
   hint?: boolean
 ): 'legacy' | 'composable' {
   if (hint === true) return 'legacy'
   if (hint === false) return 'composable'
-  return isComposableSupported(info.major, info.minor)
+  return isComposableSupported(info)
     ? 'composable'
     : 'legacy'
 }
@@ -81,7 +83,7 @@ export async function listIndexTemplates(
   }
 
   const composable =
-    isComposableSupported(info.major, info.minor) ||
+    isComposableSupported(info) ||
     // Some clusters have legacy templates disabled but composable
     // templates enabled even on older minors — we probe both to be
     // safe and dedupe by name below.
@@ -138,7 +140,7 @@ export async function getIndexTemplate(
   }
 
   // Prefer composable when the server supports it.
-  if (isComposableSupported(info.major, info.minor)) {
+  if (isComposableSupported(info)) {
     try {
       const record = await elasticsearchRequest<{
         index_templates?: Array<{

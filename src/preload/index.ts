@@ -2,7 +2,7 @@
  * Preload script.
  *
  * Runs in an isolated context with access to a limited Node API. We expose a
- * small, typed `esApi` object to the renderer through contextBridge so the
+ * small, typed `searchApi` object to the renderer through contextBridge so the
  * renderer can call into the main process without ever touching Node directly.
  *
  * Phase 7 surfaces:
@@ -32,8 +32,8 @@ import {
   type DocumentSearchResult,
   type DocumentWriteRequest,
   type DocumentWriteResult,
-  type EsConnection,
-  type EsConnectionInput,
+  type SearchConnection,
+  type SearchConnectionInput,
   type ExportCancelRequest,
   type ExportCancelResult,
   type ExportPickPathRequest,
@@ -80,7 +80,8 @@ import {
   type ShardRelocateRequest,
   type ShardRerouteResult
 } from '../shared/ipc'
-import type { SearchEngineServerInfo } from '../shared/searchEngine'
+import type { SearchEngineServerInfo, SearchEngineManifest, SearchQueryResult, SearchSchemaResult } from '../shared/searchEngine'
+import type { SearchResourceListResult, SearchEngineCapabilitiesResult, ResourceRequest, SearchQueryRequest, RequestCancelRequest, EngineTaskRequest, EngineTaskRef, EngineTaskResult } from '../shared/ipc'
 import type { DslFavorite, DslFavoriteInput } from '../shared/ipc'
 
 const api = {
@@ -90,27 +91,27 @@ const api = {
     ipcRenderer.invoke(IpcChannels.AppGetPlatform) as Promise<AppPlatformResult>,
 
   connections: {
-    list: (): Promise<ApiResponse<EsConnection[]>> =>
+    list: (): Promise<ApiResponse<SearchConnection[]>> =>
       ipcRenderer.invoke(IpcChannels.ConnectionList) as Promise<
-        ApiResponse<EsConnection[]>
+        ApiResponse<SearchConnection[]>
       >,
-    create: (input: EsConnectionInput): Promise<ApiResponse<EsConnection>> =>
+    create: (input: SearchConnectionInput): Promise<ApiResponse<SearchConnection>> =>
       ipcRenderer.invoke(
         IpcChannels.ConnectionCreate,
         input
-      ) as Promise<ApiResponse<EsConnection>>,
-    update: (input: EsConnectionInput): Promise<ApiResponse<EsConnection>> =>
+      ) as Promise<ApiResponse<SearchConnection>>,
+    update: (input: SearchConnectionInput): Promise<ApiResponse<SearchConnection>> =>
       ipcRenderer.invoke(
         IpcChannels.ConnectionUpdate,
         input
-      ) as Promise<ApiResponse<EsConnection>>,
+      ) as Promise<ApiResponse<SearchConnection>>,
     delete: (id: string): Promise<ApiResponse<{ id: string }>> =>
       ipcRenderer.invoke(
         IpcChannels.ConnectionDelete,
         id
       ) as Promise<ApiResponse<{ id: string }>>,
     test: (
-      input: EsConnectionInput
+      input: SearchConnectionInput
     ): Promise<ApiResponse<ConnectionTestResult>> =>
       ipcRenderer.invoke(
         IpcChannels.ConnectionTest,
@@ -388,7 +389,7 @@ const api = {
     }
   },
 
-  /* Search engine metadata (V0.3.0 §10.2). */
+  /* Search engine metadata, resources, queries and tasks. */
   searchEngine: {
     detect: (
       connectionId: string
@@ -396,7 +397,27 @@ const api = {
       ipcRenderer.invoke(
         IpcChannels.SearchEngineDetect,
         connectionId
-      ) as Promise<ApiResponse<SearchEngineServerInfo>>
+      ) as Promise<ApiResponse<SearchEngineServerInfo>>,
+    list: (): Promise<ApiResponse<{ manifests: SearchEngineManifest[] }>> =>
+      ipcRenderer.invoke(IpcChannels.SearchEngineList) as Promise<ApiResponse<{ manifests: SearchEngineManifest[] }>>,
+    capabilities: (connectionId: string): Promise<ApiResponse<SearchEngineCapabilitiesResult>> =>
+      ipcRenderer.invoke(IpcChannels.SearchEngineCapabilities, connectionId) as Promise<ApiResponse<SearchEngineCapabilitiesResult>>,
+    resources: (connectionId: string): Promise<ApiResponse<SearchResourceListResult>> =>
+      ipcRenderer.invoke(IpcChannels.ResourceList, connectionId) as Promise<ApiResponse<SearchResourceListResult>>,
+    schema: (request: ResourceRequest): Promise<ApiResponse<SearchSchemaResult>> =>
+      ipcRenderer.invoke(IpcChannels.ResourceSchema, request) as Promise<ApiResponse<SearchSchemaResult>>,
+    query: (request: SearchQueryRequest): Promise<ApiResponse<SearchQueryResult>> =>
+      ipcRenderer.invoke(IpcChannels.ResourceQuery, request) as Promise<ApiResponse<SearchQueryResult>>,
+    cancel: (request: RequestCancelRequest): Promise<ApiResponse<{ cancelled: boolean }>> =>
+      ipcRenderer.invoke(IpcChannels.RequestCancel, request) as Promise<ApiResponse<{ cancelled: boolean }>>
+  },
+  tasks: {
+    execute: (request: EngineTaskRequest): Promise<ApiResponse<EngineTaskResult>> =>
+      ipcRenderer.invoke(IpcChannels.TaskExecute, request) as Promise<ApiResponse<EngineTaskResult>>,
+    status: (request: EngineTaskRef): Promise<ApiResponse<EngineTaskResult>> =>
+      ipcRenderer.invoke(IpcChannels.TaskStatus, request) as Promise<ApiResponse<EngineTaskResult>>,
+    cancel: (request: EngineTaskRef): Promise<ApiResponse<EngineTaskResult>> =>
+      ipcRenderer.invoke(IpcChannels.TaskCancel, request) as Promise<ApiResponse<EngineTaskResult>>
   },
 
   /* Alias management (V0.3.4 A-4) */
@@ -484,6 +505,6 @@ const api = {
   }
 }
 
-contextBridge.exposeInMainWorld('esApi', api)
+contextBridge.exposeInMainWorld('searchApi', api)
 
-export type EsApi = typeof api
+export type SearchApi = typeof api

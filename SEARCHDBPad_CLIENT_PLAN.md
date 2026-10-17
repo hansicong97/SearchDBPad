@@ -1,5 +1,7 @@
 # SearchDBPad 开发计划
 
+> **当前 0.4.0 基线（2026-10-17）**：本文最初按 Elasticsearch 优先路线编写，历史章节继续保留作为产品背景。当前代码已经提供 Elasticsearch 6.x–9.x、OpenSearch 1.x/2.x 和 Solr 8/9 的 adapter 基线，renderer 通过类型化的 `window.searchApi` 访问主进程；旧连接缺少 `engineType` 时仍按 Elasticsearch 读取。现有 fixture 和单元测试用于证明协议路径，真实服务器、Electron 界面和 Windows 安装包仍需按发布验收矩阵单独验证。后续功能和架构调整以当前代码、`docs/PROJECT_ANALYSIS.md` 及对应 release plan 为准，历史目标不作为已交付能力的证明。
+
 ## 1. 项目目标
 
 本项目计划开发 SearchDBPad：一个面向搜索引擎数据管理的桌面客户端。
@@ -1169,7 +1171,7 @@ export interface ApiResponse<T> {
 ### 8.3 示例
 
 ```ts
-const result = await window.esApi.searchDocuments({
+const result = await window.searchApi.documents.search({
   connectionId: 'xxx',
   index: 'users',
   query: {

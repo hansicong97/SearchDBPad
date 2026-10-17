@@ -1,3 +1,4 @@
+import { requireOperation } from '../search/adapter.types'
 /**
  * Cluster info / health business logic.
  *
@@ -13,20 +14,17 @@ import type {
   ClusterHealth,
   ClusterInfo
 } from '../../shared/ipc'
-
-function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
+import { toPublicSearchError } from '../search/errors'
 
 export async function getClusterInfo(
   connectionId: string
 ): Promise<ApiResponse<ClusterInfo>> {
   try {
     const { connection, adapter } = await resolveAdapterByConnectionId(connectionId)
-    const data = await adapter.getClusterInfo(connection)
+    const data = await requireOperation(adapter, 'getClusterInfo')(connection)
     return { success: true, data }
   } catch (err) {
-    return { success: false, error: { message: errMsg(err) } }
+    return { success: false, error: toPublicSearchError(err, 'cluster:info') }
   }
 }
 
@@ -35,9 +33,9 @@ export async function getClusterHealth(
 ): Promise<ApiResponse<ClusterHealth>> {
   try {
     const { connection, adapter } = await resolveAdapterByConnectionId(connectionId)
-    const data = await adapter.getClusterHealth(connection)
+    const data = await requireOperation(adapter, 'getClusterHealth')(connection)
     return { success: true, data }
   } catch (err) {
-    return { success: false, error: { message: errMsg(err) } }
+    return { success: false, error: toPublicSearchError(err, 'cluster:health') }
   }
 }

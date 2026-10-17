@@ -42,8 +42,8 @@
  * tab (no extra IPC traffic).
  */
 
-import { useEffect, useState } from 'react'
-import { Button, Card, Space, Tabs, Tooltip, Typography } from 'antd'
+import { useEffect, useMemo, useState } from 'react'
+import { Alert, Button, Card, Skeleton, Space, Tabs, Tooltip, Typography } from 'antd'
 import {
   ArrowLeftOutlined,
   EditOutlined,
@@ -64,6 +64,7 @@ import SettingsEditorModal from './SettingsEditorModal'
 import ShardPanel from './ShardPanel'
 import SimpleQueryPanel from './SimpleQueryPanel'
 import { useWorkspaceStore } from '../stores/workspace.store'
+import type { SearchEngineCapabilities, SearchEngineType } from '@shared/searchEngine'
 
 const { Text, Title } = Typography
 
@@ -84,6 +85,37 @@ type TabKey =
   | 'maintenance'
   | 'export'
   | 'import'
+
+function supportsTab(
+  capabilities: SearchEngineCapabilities | null,
+  tab: TabKey,
+  engineType?: SearchEngineType
+): boolean {
+  if (!capabilities) return false
+  switch (tab) {
+    case 'documents':
+    case 'simple':
+      // SimpleQueryPanel renders the engine-native query form for Solr,
+      // while ES/OpenSearch use their simple DSL form.
+      return tab === 'simple'
+        ? capabilities.simpleQuery || (engineType === 'solr' && capabilities.documentQuery)
+        : capabilities.documentQuery
+    case 'query': return capabilities.dslQuery
+    case 'fields': return capabilities.schema
+    case 'mapping': return capabilities.mappings
+    case 'settings': return capabilities.settings
+    case 'alias': return capabilities.aliases
+    case 'shards': return capabilities.shardManagement
+    case 'maintenance': return capabilities.maintenance
+    case 'export': return capabilities.bulkTransfer || capabilities.importExport
+    case 'import':
+      return (
+        (capabilities.bulkTransfer || capabilities.importExport) &&
+        capabilities.documentWrite
+      )
+    default: return false
+  }
+}
 
 export default function IndexDetailPanel({
   indexName,
@@ -113,6 +145,10 @@ export default function IndexDetailPanel({
   const refreshAliases = useWorkspaceStore((s) => s.fetchAliases)
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
   const aliasesLoading = useWorkspaceStore((s) => s.aliasesLoading)
+  const capabilities = useWorkspaceStore((s) => s.capabilities)
+  const capabilitiesLoading = useWorkspaceStore((s) => s.capabilitiesLoading)
+  const capabilitiesError = useWorkspaceStore((s) => s.capabilitiesError)
+  const serverInfo = useWorkspaceStore((s) => s.serverInfo)
 
   // V0.3.10 F-3: when the workspace navigated here with a
   // pending tab intent (e.g. from the create-and-import flow),
@@ -124,12 +160,45 @@ export default function IndexDetailPanel({
   const clearPending = useWorkspaceStore(
     (s) => s.clearPendingIndexDetailIntent
   )
+  const availableTabs = useMemo<TabKey[]>(
+    () =>
+      capabilities
+        ? (
+            [
+              'documents',
+              'simple',
+              'query',
+              'fields',
+              'mapping',
+              'settings',
+              'alias',
+              'shards',
+              'maintenance',
+              'export',
+              'import'
+            ] as TabKey[]
+          ).filter((tab) =>
+            supportsTab(capabilities, tab, serverInfo?.engineType)
+          )
+        : [],
+    [capabilities, serverInfo?.engineType]
+  )
+
   useEffect(() => {
-    if (pendingTab) {
-      setActiveTab(pendingTab)
+    // A pending navigation intent is applied only after capabilities are
+    // available. This prevents an import flow from briefly selecting a
+    // hidden tab and avoids clearing the intent while capabilities load.
+    if (pendingTab && capabilities) {
+      setActiveTab(
+        availableTabs.includes(pendingTab) ? pendingTab : (availableTabs[0] ?? 'documents')
+      )
+      clearPending()
+      return
     }
-    clearPending()
-  }, [indexName, pendingTab, clearPending])
+    if (capabilities && !availableTabs.includes(activeTab)) {
+      setActiveTab(availableTabs[0] ?? 'documents')
+    }
+  }, [activeTab, availableTabs, capabilities, clearPending, indexName, pendingTab])
 
   // Header refresh is per-tab so it does the right thing for whichever
   // tab the user is looking at. Mapping/Settings tabs share
@@ -181,7 +250,8 @@ export default function IndexDetailPanel({
             </Title>
           </Tooltip>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            索引详情
+            {serverInfo?.engineType === 'solr' ? 'Collection / Core 详情' : '索引详情'}
+            {serverInfo?.version ? ` · ${serverInfo.version}` : ''}
           </Text>
         </Space>
       }
@@ -192,6 +262,7 @@ export default function IndexDetailPanel({
           loading={headerLoading}
           size="small"
           disabled={
+            !capabilities ||
             activeTab === 'query' ||
             activeTab === 'simple' ||
             activeTab === 'export' ||
@@ -212,14 +283,32 @@ export default function IndexDetailPanel({
         }
       }}
     >
-      <Tabs
+      {capabilitiesLoading ? (
+        <div style={{ padding: 24 }}>
+          <Skeleton active paragraph={{ rows: 6 }} />
+        </div>
+      ) : capabilitiesError ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="无法读取当前引擎能力"
+          description="为避免执行不兼容操作，详情页功能已暂时禁用。"
+        />
+      ) : availableTabs.length === 0 ? (
+        <Alert
+          type="info"
+          showIcon
+          message="当前资源没有可用操作"
+          description="请检查连接状态和搜索引擎版本。"
+        />
+      ) : <Tabs
         activeKey={activeTab}
         onChange={(k) => setActiveTab(k as TabKey)}
         className="workspace-tabs"
         style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
         tabBarStyle={{ flex: '0 0 auto', marginBottom: 0, padding: '0 12px' }}
         items={[
-          {
+          ...(supportsTab(capabilities, 'documents') ? [{
             key: 'documents',
             label: '文档',
             children: (
@@ -227,17 +316,17 @@ export default function IndexDetailPanel({
                 <DocumentPanel />
               </div>
             )
-          },
-          {
+          }] : []),
+          ...(supportsTab(capabilities, 'simple', serverInfo?.engineType) ? [{
             key: 'simple',
-            label: '简单查询',
+            label: serverInfo?.engineType === 'solr' ? 'Solr 查询' : '简单查询',
             children: (
               <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
                 <SimpleQueryPanel />
               </div>
             )
-          },
-          {
+          }] : []),
+          ...(supportsTab(capabilities, 'query') ? [{
             key: 'query',
             label: '查询',
             children: (
@@ -245,8 +334,8 @@ export default function IndexDetailPanel({
                 <DslQueryPanel />
               </div>
             )
-          },
-          {
+          }] : []),
+          ...(supportsTab(capabilities, 'fields') ? [{
             key: 'fields',
             label: '字段',
             children: (
@@ -254,8 +343,8 @@ export default function IndexDetailPanel({
                 <FieldListPanel />
               </div>
             )
-          },
-          {
+          }] : []),
+          ...(supportsTab(capabilities, 'mapping') ? [{
             key: 'mapping',
             label: 'Mapping',
             children: (
@@ -272,16 +361,18 @@ export default function IndexDetailPanel({
                 {/* V0.3.8 B-5: tree view replaces the raw JSON.
                     The 「追加字段」 button lives outside the tree
                     so the tree component stays presentation-only. */}
-                <div style={{ flex: '0 0 auto', textAlign: 'right' }}>
-                  <Button
-                    size="small"
-                    type="primary"
-                    icon={<PlusOutlined />}
-                    onClick={() => setMappingOpen(true)}
-                  >
-                    追加字段
-                  </Button>
-                </div>
+                {capabilities?.indexManagement && capabilities.documentWrite ? (
+                  <div style={{ flex: '0 0 auto', textAlign: 'right' }}>
+                    <Button
+                      size="small"
+                      type="primary"
+                      icon={<PlusOutlined />}
+                      onClick={() => setMappingOpen(true)}
+                    >
+                      追加字段
+                    </Button>
+                  </div>
+                ) : null}
                 <div style={{ flex: 1, minHeight: 0 }}>
                   <MappingTree
                     data={mapping}
@@ -292,8 +383,8 @@ export default function IndexDetailPanel({
                 </div>
               </div>
             )
-          },
-          {
+          }] : []),
+          ...(supportsTab(capabilities, 'settings') ? [{
             key: 'settings',
             label: 'Settings',
             children: (
@@ -304,20 +395,22 @@ export default function IndexDetailPanel({
                   error={settingsError}
                   emptyText="该索引没有 settings"
                   toolbar={
-                    <Button
-                      size="small"
-                      type="primary"
-                      icon={<EditOutlined />}
-                      onClick={() => setSettingsOpen(true)}
-                    >
-                      编辑
-                    </Button>
+                    capabilities?.indexManagement && capabilities.documentWrite ? (
+                      <Button
+                        size="small"
+                        type="primary"
+                        icon={<EditOutlined />}
+                        onClick={() => setSettingsOpen(true)}
+                      >
+                        编辑
+                      </Button>
+                    ) : undefined
                   }
                 />
               </div>
             )
-          },
-          {
+          }] : []),
+          ...(supportsTab(capabilities, 'alias') ? [{
             key: 'alias',
             label: 'Alias',
             children: (
@@ -325,8 +418,8 @@ export default function IndexDetailPanel({
                 <AliasPanel indexName={indexName} />
               </div>
             )
-          },
-          {
+          }] : []),
+          ...(supportsTab(capabilities, 'shards') ? [{
             // V0.3.9 E-7: per-index shard table. ShardPanel handles
             // its own refresh on mount and stays current via the
             // actions on each row. The header refresh button on
@@ -339,8 +432,8 @@ export default function IndexDetailPanel({
                 <ShardPanel indexName={indexName} />
               </div>
             )
-          },
-          {
+          }] : []),
+          ...(supportsTab(capabilities, 'maintenance') ? [{
             // V0.3.12: Refresh / Flush / Force Merge / Clear Cache。
             // 本 tab 没有可刷新的只读数据，头部刷新按钮保持禁用。
             key: 'maintenance',
@@ -350,8 +443,8 @@ export default function IndexDetailPanel({
                 <IndexMaintenancePanel indexName={indexName} />
               </div>
             )
-          },
-          {
+          }] : []),
+          ...(supportsTab(capabilities, 'export') ? [{
             key: 'export',
             label: '导出',
             children: (
@@ -359,8 +452,8 @@ export default function IndexDetailPanel({
                 <ExportPanel />
               </div>
             )
-          },
-          {
+          }] : []),
+          ...(supportsTab(capabilities, 'import') ? [{
             key: 'import',
             label: '导入',
             children: (
@@ -368,19 +461,23 @@ export default function IndexDetailPanel({
                 <ImportPanel />
               </div>
             )
-          }
+          }] : [])
         ]}
-      />
-      <SettingsEditorModal
-        open={settingsOpen}
-        indexName={indexName}
-        onClose={() => setSettingsOpen(false)}
-      />
-      <MappingEditorModal
-        open={mappingOpen}
-        indexName={indexName}
-        onClose={() => setMappingOpen(false)}
-      />
+      />}
+      {supportsTab(capabilities, 'settings') ? (
+        <SettingsEditorModal
+          open={settingsOpen}
+          indexName={indexName}
+          onClose={() => setSettingsOpen(false)}
+        />
+      ) : null}
+      {supportsTab(capabilities, 'mapping') ? (
+        <MappingEditorModal
+          open={mappingOpen}
+          indexName={indexName}
+          onClose={() => setMappingOpen(false)}
+        />
+      ) : null}
     </Card>
   )
 }

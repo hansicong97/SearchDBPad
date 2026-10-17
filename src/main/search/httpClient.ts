@@ -1,8 +1,8 @@
 /**
  * Generic HTTP client for search-engine adapters.
  *
- * V0.3.0 replaces `@elastic/elasticsearch`'s Transport with this thin
- * wrapper. The wrapper does four things and nothing else:
+ * This thin wrapper is shared by built-in adapters. It does four things and
+ * nothing else:
  *
  *  1. Builds the request (method, headers, JSON / NDJSON body).
  *  2. Applies a timeout via AbortController and chains an optional
@@ -16,6 +16,7 @@
  */
 
 import type { SearchEngineType } from '../../shared/searchEngine'
+import { getCurrentRequestSignal } from './requestContext'
 import {
   SearchEngineError,
   codeFromHttpStatus
@@ -83,83 +84,91 @@ export async function searchHttpRequest<T = unknown>(
 
   // Timeout + caller signal chained into one AbortController.
   const controller = new AbortController()
-  const timeoutHandle = setTimeout(
-    () => controller.abort(),
-    options.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  )
-  if (options.signal) {
-    if (options.signal.aborted) {
-      controller.abort()
-    } else {
-      options.signal.addEventListener(
-        'abort',
-        () => controller.abort(),
-        { once: true }
-      )
-    }
+  let timedOut = false
+  const signals = [...new Set([options.signal, getCurrentRequestSignal()].filter(
+    (signal): signal is AbortSignal => signal !== undefined
+  ))]
+  const abort = (): void => {
+    if (!controller.signal.aborted) controller.abort()
   }
-
-  let response: Response
+  for (const signal of signals) {
+    if (signal.aborted) abort()
+    else signal.addEventListener('abort', abort, { once: true })
+  }
+  const timeoutHandle = setTimeout(() => {
+    if (!controller.signal.aborted) {
+      timedOut = true
+      controller.abort()
+    }
+  }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+  const checkAborted = (): void => {
+    if (!controller.signal.aborted) return
+    if (timedOut) {
+      throw new SearchEngineError({
+        engineType: options.engineType, code: 'timeout', message: '请求超时'
+      })
+    }
+    const error = new Error('用户已停止') as Error & { code: string }
+    error.name = 'AbortError'
+    error.code = 'CANCELLED'
+    throw error
+  }
   try {
-    response = await fetch(options.url, {
+    checkAborted()
+    const response = await fetch(options.url, {
       method: options.method,
       headers,
       body,
       signal: controller.signal
     })
-  } catch (err) {
-    clearTimeout(timeoutHandle)
-    const aborted =
-      (err as { name?: string }).name === 'AbortError' ||
-      controller.signal.aborted
-    if (aborted) {
+    checkAborted()
+    if (!response.ok) {
+      const errBody = await response.text()
+      checkAborted()
       throw new SearchEngineError({
         engineType: options.engineType,
-        code: 'timeout',
-        message: `请求超时: ${options.method} ${options.url}`,
-        details: { url: options.url, method: options.method }
+        status: response.status,
+        code: codeFromHttpStatus(response.status),
+        message: `HTTP ${response.status} ${response.statusText || ''}`.trim(),
+        details: errBody.slice(0, 2000)
       })
     }
-    throw new SearchEngineError({
-      engineType: options.engineType,
-      code: 'network_error',
-      message: `网络错误: ${(err as Error).message}`,
-      details: { url: options.url, method: options.method }
-    })
-  }
-  clearTimeout(timeoutHandle)
 
-  if (!response.ok) {
-    const errBody = await response.text().catch(() => '')
-    throw new SearchEngineError({
-      engineType: options.engineType,
-      status: response.status,
-      code: codeFromHttpStatus(response.status),
-      message: `HTTP ${response.status} ${response.statusText || ''}`.trim(),
-      details: errBody.slice(0, 2000)
-    })
-  }
+    const responseType = options.responseType ?? 'json'
+    if (responseType === 'none') {
+      await response.body?.cancel()
+      checkAborted()
+      return undefined as T
+    }
+    if (responseType === 'text') {
+      const text = await response.text()
+      checkAborted()
+      return text as T
+    }
 
-  const responseType = options.responseType ?? 'json'
-  if (responseType === 'none') {
-    return undefined as T
-  }
-  if (responseType === 'text') {
-    return (await response.text()) as T
-  }
-
-  // JSON parsing with an empty-body shortcut and a typed parse error.
-  const text = await response.text()
-  if (!text) return undefined as T
-  try {
-    return JSON.parse(text) as T
+    // JSON parsing with an empty-body shortcut and a typed parse error.
+    const text = await response.text()
+    checkAborted()
+    if (!text) return undefined as T
+    try {
+      return JSON.parse(text) as T
+    } catch {
+      throw new SearchEngineError({
+        engineType: options.engineType,
+        code: 'parse_error',
+        message: '响应解析失败',
+        details: { method: options.method }
+      })
+    }
   } catch (err) {
+    checkAborted()
+    if (err instanceof SearchEngineError) throw err
     throw new SearchEngineError({
-      engineType: options.engineType,
-      code: 'parse_error',
-      message: `响应解析失败: ${(err as Error).message}`,
-      details: { url: options.url, body: text.slice(0, 500) }
+      engineType: options.engineType, code: 'network_error', message: '网络请求失败'
     })
+  } finally {
+    clearTimeout(timeoutHandle)
+    for (const signal of signals) signal.removeEventListener('abort', abort)
   }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "searchdbpad",
-  "version": "0.3.11",
+  "version": "0.4.0",
   "description": "Desktop client for search engine data management",
   "main": "dist/main/index.js",
   "author": "SearchDBPad",
@@ -14,6 +14,8 @@
     "build": "npm run build:main && npm run build:renderer",
     "start": "cross-env NODE_ENV=production electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.main.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",
@@ -94,6 +96,7 @@
     "electron-builder": "^25.0.5",
     "typescript": "^5.6.2",
     "vite": "^5.4.8",
+    "vitest": "^2.1.9",
     "wait-on": "^8.0.1"
   }
 }

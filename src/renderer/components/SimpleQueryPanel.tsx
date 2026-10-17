@@ -13,7 +13,7 @@
  *     so the WorkspacePage can surface the error as a toast.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   Button,
@@ -40,6 +40,7 @@ import {
   type SimpleOperator
 } from '../utils/buildSimpleDsl'
 import { useWorkspaceStore } from '../stores/workspace.store'
+import { useConnectionStore } from '../stores/connection.store'
 import type { DocumentHit } from '@shared/ipc'
 
 const { Text } = Typography
@@ -89,6 +90,7 @@ function HitSourceCell({
 export default function SimpleQueryPanel(): JSX.Element {
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
   const selectedIndex = useWorkspaceStore((s) => s.selectedIndex)
+  const engineType = useConnectionStore((s) => s.connections.find((c) => c.id === activeConnectionId)?.engineType ?? 'elasticsearch')
   const simpleResults = useWorkspaceStore((s) => s.simpleResults)
   const simpleLoading = useWorkspaceStore((s) => s.simpleLoading)
   const simpleError = useWorkspaceStore((s) => s.simpleError)
@@ -98,6 +100,11 @@ export default function SimpleQueryPanel(): JSX.Element {
   const [operator, setOperator] = useState<SimpleOperator>(DEFAULT_OPERATOR)
   const [value, setValue] = useState(DEFAULT_VALUE)
   const [formError, setFormError] = useState<string | null>(null)
+  const [solrQ, setSolrQ] = useState('*:*')
+  const [solrFq, setSolrFq] = useState('')
+  const [solrSort, setSolrSort] = useState('')
+  const [solrStart, setSolrStart] = useState('0')
+  const [solrRows, setSolrRows] = useState(String(RESULT_SIZE))
 
   const operatorMeta = useMemo(
     () => SIMPLE_OPERATORS.find((o) => o.value === operator),
@@ -110,10 +117,37 @@ export default function SimpleQueryPanel(): JSX.Element {
     setOperator(DEFAULT_OPERATOR)
     setValue(DEFAULT_VALUE)
     setFormError(null)
+    setSolrQ('*:*')
+    setSolrFq('')
+    setSolrSort('')
+    setSolrStart('0')
+    setSolrRows(String(RESULT_SIZE))
   }
+
+  useEffect(() => {
+    handleReset()
+  }, [activeConnectionId, selectedIndex])
 
   const handleRun = async (): Promise<void> => {
     if (!activeConnectionId || !selectedIndex) return
+    if (engineType === 'solr') {
+      const start = Number(solrStart)
+      const rows = Number(solrRows)
+      if (!Number.isInteger(start) || start < 0 || !Number.isInteger(rows) || rows < 1 || rows > 10000) {
+        setFormError('Solr 的 start 必须是非负整数，rows 必须是 1-10000 的整数')
+        return
+      }
+      const fq = solrFq.split(/\r?\n/).map((v) => v.trim()).filter(Boolean)
+      setFormError(null)
+      await runSimpleQuery(activeConnectionId, selectedIndex, {
+        q: solrQ.trim() || '*:*',
+        ...(fq.length ? { fq } : {}),
+        ...(solrSort.trim() ? { sort: solrSort.trim() } : {}),
+        start,
+        rows
+      }, 'solr')
+      return
+    }
     // V0.3.9 E-6: when the field name is empty, skip the form
     // builder entirely and run a match_all query so the user can
     // browse every document in the index without first picking a
@@ -130,7 +164,7 @@ export default function SimpleQueryPanel(): JSX.Element {
       }
       body = built
     }
-    if (valueRequired && value.trim() === '') {
+    if (field.trim() && valueRequired && value.trim() === '') {
       setFormError(`操作符「${operatorMeta?.label ?? operator}」需要查询值`)
       return
     }
@@ -142,8 +176,8 @@ export default function SimpleQueryPanel(): JSX.Element {
 
   const columns: ColumnsType<DocumentHit> = [
     {
-      title: '_id',
-      dataIndex: '_id',
+      title: 'ID',
+      dataIndex: 'id',
       key: '_id',
       width: 220,
       render: (v: string) => (
@@ -155,20 +189,11 @@ export default function SimpleQueryPanel(): JSX.Element {
       )
     },
     {
-      title: '_score',
-      dataIndex: '_score',
-      key: '_score',
-      width: 90,
-      align: 'right',
-      render: (v: number | null) =>
-        v === null || v === undefined ? <Text type="secondary">-</Text> : v.toFixed(3)
-    },
-    {
-      title: '_source',
-      dataIndex: '_source',
-      key: '_source',
+      title: '文档字段',
+      dataIndex: 'fields',
+      key: 'fields',
       render: (_v: unknown, record: DocumentHit) => (
-        <HitSourceCell value={record._source} />
+        <HitSourceCell value={record.fields} />
       )
     }
   ]
@@ -178,6 +203,17 @@ export default function SimpleQueryPanel(): JSX.Element {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, height: '100%' }}>
       <Form layout="inline" onFinish={() => void handleRun()}>
+        {engineType === 'solr' ? <>
+          <Form.Item label="q">
+            <Input value={solrQ} onChange={(e) => setSolrQ(e.target.value)} placeholder="*:*" style={{ width: 220 }} />
+          </Form.Item>
+          <Form.Item label="fq">
+            <Input.TextArea value={solrFq} onChange={(e) => setSolrFq(e.target.value)} placeholder="每行一个过滤条件" autoSize={{ minRows: 1, maxRows: 4 }} style={{ width: 220 }} />
+          </Form.Item>
+          <Form.Item label="sort"><Input value={solrSort} onChange={(e) => setSolrSort(e.target.value)} placeholder="score desc" style={{ width: 160 }} /></Form.Item>
+          <Form.Item label="start"><Input value={solrStart} onChange={(e) => setSolrStart(e.target.value)} style={{ width: 80 }} /></Form.Item>
+          <Form.Item label="rows"><Input value={solrRows} onChange={(e) => setSolrRows(e.target.value)} style={{ width: 80 }} /></Form.Item>
+        </> : <>
         <Form.Item label="字段">
           <Input
             value={field}
@@ -208,6 +244,7 @@ export default function SimpleQueryPanel(): JSX.Element {
             allowClear
           />
         </Form.Item>
+        </>}
         <Form.Item>
           <Space>
             <Button
@@ -241,7 +278,7 @@ export default function SimpleQueryPanel(): JSX.Element {
         ) : !simpleResults ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description="填写字段、操作符和值后点击查询（字段留空会查询全部）"
+            description={engineType === 'solr' ? '填写 Solr q / fq / sort 参数后点击查询' : '填写字段、操作符和值后点击查询（字段留空会查询全部）'}
           />
         ) : (
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -254,14 +291,14 @@ export default function SimpleQueryPanel(): JSX.Element {
                 {simpleResults.total.toLocaleString('en-US')}
               </Tag>
               <Tag>
-                本次最多展示 {RESULT_SIZE} 条 · 实际 {hits.length} 条
+                本次返回 {hits.length} 条
               </Tag>
             </Space>
             {hits.length === 0 ? (
               <Empty description="没有命中任何文档" />
             ) : (
               <Table<DocumentHit>
-                rowKey="_id"
+                rowKey={(record, index) => record.id ?? `hit-${index}`}
                 columns={columns}
                 dataSource={hits}
                 size="small"

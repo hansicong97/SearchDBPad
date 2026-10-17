@@ -22,7 +22,7 @@
  *     browser is in scope).
  *   - The store does NOT own the IPC subscription. `JobTaskFloatButton`
  *     subscribes once on mount via the `onProgress` callbacks
- *     already exposed on `window.esApi` and forwards events into
+ *     already exposed on `window.searchApi` and forwards events into
  *     this store. The individual panels keep their own
  *     `onProgress` subscriptions unchanged.
  *   - Job metadata (target index, file path, output path, format)
@@ -51,7 +51,7 @@ import type {
 
 export type JobTaskKind = 'import' | 'export'
 
-export type JobTaskStage = 'queued' | 'running' | 'cancelling' | 'completed' | 'failed'
+export type JobTaskStage = 'queued' | 'running' | 'cancelling' | 'completed' | 'cancelled' | 'failed'
 
 export interface ImportJobMeta {
   connectionId: string
@@ -121,9 +121,10 @@ interface JobTaskState {
 
 function taskStageFromProgress(
   current: JobTask | undefined,
-  progressStage: 'completed' | 'failed' | string
+  progressStage: 'completed' | 'cancelled' | 'failed' | string
 ): JobTaskStage {
   if (progressStage === 'completed') return 'completed'
+  if (progressStage === 'cancelled') return 'cancelled'
   if (progressStage === 'failed') return 'failed'
   return current?.stage === 'cancelling' ? 'cancelling' : 'running'
 }
@@ -241,13 +242,13 @@ export const useJobTaskStore = create<JobTaskState>((set, get) => ({
   cancelTask: async (jobId) => {
     const task = get().tasks.find((t) => t.jobId === jobId)
     if (!task) return errorResponse('未找到任务')
-    if (task.stage === 'completed' || task.stage === 'failed') {
+    if (task.stage === 'completed' || task.stage === 'cancelled' || task.stage === 'failed') {
       return { success: true, data: { jobId, cancelled: false } }
     }
 
     set((s) => ({
       tasks: s.tasks.map((t) =>
-        t.jobId === jobId && t.stage !== 'completed' && t.stage !== 'failed'
+        t.jobId === jobId && t.stage !== 'completed' && t.stage !== 'cancelled' && t.stage !== 'failed'
           ? { ...t, stage: 'cancelling' }
           : t
       )
@@ -255,8 +256,8 @@ export const useJobTaskStore = create<JobTaskState>((set, get) => ({
 
     const res =
       task.kind === 'import'
-        ? await window.esApi.importDocs.cancel({ jobId })
-        : await window.esApi.exportDocs.cancel({ jobId })
+        ? await window.searchApi.importDocs.cancel({ jobId })
+        : await window.searchApi.exportDocs.cancel({ jobId })
 
     if (!res.success) {
       set((s) => ({

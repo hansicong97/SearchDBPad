@@ -69,7 +69,7 @@ const DEFAULT_DSL = '{\n  "query": {\n    "match_all": {}\n  },\n  "size": 20\n}
 
 function HitRow({ value }: { value: Record<string, unknown> | null }): JSX.Element {
   if (value === null) {
-    return <Text type="secondary">(无 _source)</Text>
+    return <Text type="secondary">(无文档字段)</Text>
   }
   const pretty = (() => {
     try {
@@ -481,12 +481,12 @@ export default function DslQueryPanel(): JSX.Element {
                   <Empty description="没有命中任何文档" />
                 ) : (
                   <Table<DocumentHit>
-                    rowKey="_id"
+                    rowKey={(record, index) => record.id ?? `hit-${index}`}
                     columns={
                       [
                         {
-                          title: '_id',
-                          dataIndex: '_id',
+                          title: 'ID',
+                          dataIndex: 'id',
                           key: '_id',
                           width: 220,
                           render: (v: string) => (
@@ -498,24 +498,11 @@ export default function DslQueryPanel(): JSX.Element {
                           )
                         },
                         {
-                          title: '_score',
-                          dataIndex: '_score',
-                          key: '_score',
-                          width: 90,
-                          align: 'right',
-                          render: (v: number | null) =>
-                            v === null || v === undefined ? (
-                              <Text type="secondary">-</Text>
-                            ) : (
-                              v.toFixed(3)
-                            )
-                        },
-                        {
-                          title: '_source',
-                          dataIndex: '_source',
-                          key: '_source',
+                          title: '文档字段',
+                          dataIndex: 'fields',
+                          key: 'fields',
                           render: (_v: unknown, record: DocumentHit) => (
-                            <HitRow value={record._source} />
+                            <HitRow value={record.fields} />
                           )
                         }
                       ] as ColumnsType<DocumentHit>

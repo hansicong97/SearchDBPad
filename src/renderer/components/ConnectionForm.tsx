@@ -24,7 +24,7 @@
  * (which uses the connection store).
  */
 
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Form,
   Input,
@@ -39,8 +39,9 @@ import {
 import type {
   ConnectionFolder,
   ConnectionTestResult,
-  EsConnection
+  SearchConnection
 } from '@shared/ipc'
+import type { SearchEngineType, SearchEngineManifest as Manifest } from '@shared/searchEngine'
 
 const { Text } = Typography
 
@@ -49,6 +50,7 @@ export interface ConnectionFormValues {
   name: string
   url: string
   authType: 'none' | 'basic'
+  engineType: SearchEngineType
   username?: string
   password?: string
   folderId?: string | null
@@ -56,7 +58,7 @@ export interface ConnectionFormValues {
 
 interface Props {
   open: boolean
-  initial?: EsConnection | null
+  initial?: SearchConnection | null
   folders: ConnectionFolder[]
   submitting?: boolean
   testing?: boolean
@@ -81,6 +83,18 @@ export default function ConnectionForm({
 }: Props): JSX.Element {
   const [form] = Form.useForm<ConnectionFormValues>()
   const authType = Form.useWatch('authType', form) as 'none' | 'basic' | undefined
+  const engineType = Form.useWatch('engineType', form) as SearchEngineType | undefined
+  const [engines, setEngines] = useState<Manifest[]>([])
+
+  useEffect(() => {
+    let active = true
+    void window.searchApi.searchEngine.list().then((response) => {
+      if (active && response.success) setEngines(response.data?.manifests ?? [])
+    })
+    return () => { active = false }
+  }, [])
+
+  const selectedManifest = engines.find((item) => item.type === (engineType ?? 'elasticsearch'))
 
   // V0.3.9 E-4: render folder options in a stable order, top-level
   // first, then each folder's children. Each label is prefixed
@@ -150,6 +164,7 @@ export default function ConnectionForm({
         name: initial.name,
         url: initial.url,
         authType: initial.authType,
+        engineType: initial.engineType ?? 'elasticsearch',
         username: initial.username,
         // V0.3.9 security: never pre-fill the saved password. The
         // input below is masked regardless, but seeding the value
@@ -164,6 +179,7 @@ export default function ConnectionForm({
         name: '',
         url: '',
         authType: 'none',
+        engineType: 'elasticsearch',
         username: undefined,
         password: undefined,
         folderId: null
@@ -217,24 +233,32 @@ export default function ConnectionForm({
           <Input placeholder="例如：本地开发（留空将使用默认名）" maxLength={64} />
         </Form.Item>
 
+        <Form.Item label="搜索引擎" name="engineType">
+          <Select
+            options={engines.map((item) => ({ label: item.displayName, value: item.type }))}
+            placeholder="选择搜索引擎"
+            disabled={engines.length === 0}
+          />
+        </Form.Item>
+
         <Form.Item
-          label="Elasticsearch 地址"
+          label={`${selectedManifest?.displayName ?? '搜索引擎'} 地址`}
           name="url"
           rules={[
-            { required: true, message: '请输入 Elasticsearch 地址' },
+            { required: true, message: '请输入搜索引擎地址' },
             {
               pattern: /^https?:\/\//i,
               message: '地址必须以 http:// 或 https:// 开头'
             }
           ]}
         >
-          <Input placeholder="http://localhost:9200" />
+          <Input placeholder={engineType === 'solr' ? 'http://localhost:8983/solr' : 'http://localhost:9200'} />
         </Form.Item>
 
         <Form.Item label="认证方式" name="authType">
           <Radio.Group>
-            <Radio.Button value="none">无认证</Radio.Button>
-            <Radio.Button value="basic">Basic Auth</Radio.Button>
+            <Radio.Button value="none" disabled={selectedManifest != null && !selectedManifest.authSchemes.includes('none')}>无认证</Radio.Button>
+            <Radio.Button value="basic" disabled={selectedManifest != null && !selectedManifest.authSchemes.includes('basic')}>Basic Auth</Radio.Button>
           </Radio.Group>
         </Form.Item>
 
@@ -302,7 +326,7 @@ export default function ConnectionForm({
           message={
             testResult.reachable
               ? '连接成功'
-              : '无法连接到 Elasticsearch'
+              : `无法连接到 ${selectedManifest?.displayName ?? '搜索引擎'}`
           }
           description={
             <Space direction="vertical" size={2}>

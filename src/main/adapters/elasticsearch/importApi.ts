@@ -13,6 +13,8 @@
  */
 
 import { elasticsearchRequest } from './client'
+import { SearchEngineError } from '../../search/errors'
+import { createCancelledError } from '../../services/jobCancel.service'
 import type { SearchConnection } from '../../../shared/searchEngine'
 import type {
   ImportFailure,
@@ -49,8 +51,8 @@ function truncate(s: string | undefined, n: number): string | undefined {
 }
 
 function throwIfCancelled(input: ImportInput): void {
-  if (input.isCancelled?.()) {
-    throw new Error('用户已停止')
+  if (input.signal?.aborted || input.isCancelled?.()) {
+    throw createCancelledError()
   }
 }
 
@@ -59,24 +61,40 @@ function throwIfCancelled(input: ImportInput): void {
  *  avoid partial success. */
 async function clearIndexForReplace(
   connection: SearchConnection,
-  index: string
+  index: string,
+  signal?: AbortSignal
 ): Promise<void> {
-  await elasticsearchRequest(connection, {
+  const result = await elasticsearchRequest<{
+    total?: number; deleted?: number; timed_out?: boolean;
+    version_conflicts?: number; failures?: unknown[]
+  }>(connection, {
     method: 'POST',
-    path: `/${index}/_delete_by_query`,
-    query: { refresh: 'true', conflicts: 'proceed' },
-    body: { query: { match_all: {} } }
+    path: `/${encodeURIComponent(index)}/_delete_by_query`,
+    query: { refresh: 'true', conflicts: 'abort' },
+    body: { query: { match_all: {} } },
+    signal
   })
+  if (!result || !Number.isSafeInteger(result.total) || !Number.isSafeInteger(result.deleted)
+    || result.total! < 0 || result.deleted! < 0 || !Array.isArray(result.failures)) {
+    throw new SearchEngineError({engineType: connection.engineType, code: 'parse_error', message: '覆盖导入前的清理响应格式无效。'})
+  }
+  // Delete-by-query may return HTTP 200 after timing out or deleting only part
+  // of the resource. Never append new rows to a partially cleared destination.
+  if (result.timed_out || (result.version_conflicts ?? 0) > 0 || result.failures.length > 0 || result.deleted !== result.total) {
+    throw new SearchEngineError({engineType: connection.engineType, code: 'http_error', message: '覆盖导入前未能完整清理目标资源，已停止写入。'})
+  }
 }
 
 async function refreshIndex(
   connection: SearchConnection,
-  index: string
+  index: string,
+  signal?: AbortSignal
 ): Promise<void> {
   try {
     await elasticsearchRequest(connection, {
       method: 'POST',
-      path: `/${index}/_refresh`
+      path: `/${encodeURIComponent(index)}/_refresh`,
+      signal
     })
   } catch {
     /* best-effort — the user can hit refresh manually */
@@ -94,14 +112,14 @@ export async function importDocuments(
   if (input.mode === 'replace' && total > 0) {
     // Surface wipe failures via the normal SearchEngineError path —
     // the service will translate to ApiResponse.error.
-    await clearIndexForReplace(connection, input.index)
+    await clearIndexForReplace(connection, input.index, input.signal)
     throwIfCancelled(input)
   }
 
   if (total === 0) {
     throwIfCancelled(input)
     if (input.mode === 'replace') {
-      await refreshIndex(connection, input.index)
+      await refreshIndex(connection, input.index, input.signal)
       throwIfCancelled(input)
     }
     return {
@@ -134,23 +152,24 @@ export async function importDocuments(
       {
         method: 'POST',
         path: '/_bulk',
-        ndjsonBody: ndjson
+        ndjsonBody: ndjson,
+        signal: input.signal
       }
     )
     throwIfCancelled(input)
 
     const items = Array.isArray(response.items) ? response.items : []
-    for (let i = 0; i < items.length; i++) {
+    for (let i = 0; i < batch.length; i++) {
       const item = items[i]
-      const op = item.index
-      if (op && op.error) {
+      const op = item?.index
+      if (!op || op.error || (op.status !== undefined && op.status >= 300)) {
         failed++
         if (failures.length < FAILURES_LIMIT) {
           failures.push({
             line: start + i,
-            id: typeof op._id === 'string' ? op._id : undefined,
+            id: typeof op?._id === 'string' ? op._id : batch[i].id,
             error:
-              op.error.reason ?? op.error.type ?? 'Bulk 项失败（未知原因）',
+              op?.error?.reason ?? op?.error?.type ?? 'Bulk 项失败或响应缺失',
             raw: truncate(JSON.stringify(batch[i].source), RAW_FAILURE_PREVIEW)
           })
         }
@@ -170,7 +189,7 @@ export async function importDocuments(
 
   // Best-effort refresh so the next UI search sees the new docs.
   throwIfCancelled(input)
-  await refreshIndex(connection, input.index)
+  await refreshIndex(connection, input.index, input.signal)
   throwIfCancelled(input)
 
   return {

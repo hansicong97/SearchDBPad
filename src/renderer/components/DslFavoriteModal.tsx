@@ -16,7 +16,7 @@
  *     callback — the modal itself does not own the editor state.
  *
  * The renderer never reads or writes the favorites file directly;
- * all I/O goes through `window.esApi.dslFavorites.*` → main process
+ * all I/O goes through `window.searchApi.dslFavorites.*` → main process
  * service layer.
  */
 

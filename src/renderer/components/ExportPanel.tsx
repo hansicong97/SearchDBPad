@@ -33,6 +33,7 @@ import {
   StopOutlined
 } from '@ant-design/icons'
 import { useWorkspaceStore } from '../stores/workspace.store'
+import { useConnectionStore } from '../stores/connection.store'
 import { useJobTaskStore } from '../stores/jobTask.store'
 import { MAX_EXPORT_ROWS } from '@shared/ipc'
 import type { ExportFormat, ExportProgress, ExportStage } from '@shared/ipc'
@@ -68,6 +69,9 @@ export default function ExportPanel(): JSX.Element {
   const { message } = AntdApp.useApp()
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
   const selectedIndex = useWorkspaceStore((s) => s.selectedIndex)
+  const capabilities = useWorkspaceStore((s) => s.capabilities)
+  const engineType = useConnectionStore((s) => s.connections.find((c) => c.id === activeConnectionId)?.engineType ?? 'elasticsearch')
+  const solr = engineType === 'solr'
 
   const [format, setFormat] = useState<ExportFormat>('json')
   const [maxRows, setMaxRows] = useState<number>(DEFAULT_MAX_ROWS)
@@ -99,7 +103,7 @@ export default function ExportPanel(): JSX.Element {
   const [cancelRequested, setCancelRequested] = useState<boolean>(false)
 
   useEffect(() => {
-    const unsubscribe = window.esApi.exportDocs.onProgress((p) => {
+    const unsubscribe = window.searchApi.exportDocs.onProgress((p) => {
       const activeJobId = activeJobIdRef.current
       if (activeJobId && p.jobId !== activeJobId) return
       if (!activeJobId && !exporting && !pendingMetaRef.current) return
@@ -107,7 +111,7 @@ export default function ExportPanel(): JSX.Element {
         activeJobIdRef.current = p.jobId
         registerExportTask(p.jobId, pendingMetaRef.current)
       }
-      if (p.stage === 'completed' || p.stage === 'failed') {
+      if (p.stage === 'completed' || p.stage === 'cancelled' || p.stage === 'failed') {
         pendingMetaRef.current = null
         setCancelRequested(false)
       }
@@ -116,7 +120,11 @@ export default function ExportPanel(): JSX.Element {
     return unsubscribe
   }, [exporting, registerExportTask])
 
-  const ready = !!activeConnectionId && !!selectedIndex
+  const ready = !!activeConnectionId && !!selectedIndex && !!capabilities?.bulkTransfer && !!capabilities?.importExport
+
+  useEffect(() => {
+    if (solr && format === 'ndjson') setFormat('json')
+  }, [solr, format])
 
   const handleExport = async (): Promise<void> => {
     if (!ready) return
@@ -131,7 +139,7 @@ export default function ExportPanel(): JSX.Element {
     pendingMetaRef.current = null
     setExporting(true)
     try {
-      const pickRes = await window.esApi.exportDocs.pickSavePath({
+      const pickRes = await window.searchApi.exportDocs.pickSavePath({
         index: selectedIndex as string,
         format
       })
@@ -149,12 +157,13 @@ export default function ExportPanel(): JSX.Element {
         format,
         outputPath: pickRes.data.outputPath
       }
-      const execRes = await window.esApi.exportDocs.execute({
+      const execRes = await window.searchApi.exportDocs.execute({
         connectionId: activeConnectionId as string,
         index: selectedIndex as string,
         format,
         outputPath: pickRes.data.outputPath,
-        maxRows
+        maxRows,
+        queryLanguage: solr ? 'solr' : 'elasticsearch-dsl'
       })
       if (!execRes.success || !execRes.data) {
         // Keep the most recent `failed` event visible — main
@@ -186,11 +195,11 @@ export default function ExportPanel(): JSX.Element {
   }
 
   const handleCancelExport = async (): Promise<void> => {
-    if (!progress || progress.stage === 'completed' || progress.stage === 'failed') return
+    if (!progress || progress.stage === 'completed' || progress.stage === 'cancelled' || progress.stage === 'failed') return
     setCancelRequested(true)
     const res = await cancelTask(progress.jobId)
     if (!res.success) {
-      const fallback = await window.esApi.exportDocs.cancel({ jobId: progress.jobId })
+      const fallback = await window.searchApi.exportDocs.cancel({ jobId: progress.jobId })
       if (!fallback.success) {
         setCancelRequested(false)
         message.error(fallback.error?.message ?? res.error?.message ?? '停止导出任务失败')
@@ -204,26 +213,27 @@ export default function ExportPanel(): JSX.Element {
     querying: '查询文档中',
     writing: '写入文件中',
     completed: '已完成',
+    cancelled: '已停止',
     failed: '失败'
   }
   const showProgress =
     !!progress &&
     (exporting ||
       progress.stage === 'completed' ||
-      progress.stage === 'failed')
+      progress.stage === 'failed' || progress.stage === 'cancelled')
   const progressPercent = progress?.percent ?? 0
   const progressStatus: 'normal' | 'success' | 'exception' | 'active' =
     cancelRequested
       ? 'exception'
       : progress?.stage === 'completed'
         ? 'success'
-        : progress?.stage === 'failed'
+        : progress?.stage === 'failed' || progress?.stage === 'cancelled'
           ? 'exception'
           : progress && progress.percent !== null
             ? 'active'
             : 'normal'
   const canCancelProgress =
-    !!progress && progress.stage !== 'completed' && progress.stage !== 'failed'
+    !!progress && progress.stage !== 'completed' && progress.stage !== 'cancelled' && progress.stage !== 'failed'
 
   return (
     <div style={{ maxWidth: 720 }}>
@@ -231,7 +241,7 @@ export default function ExportPanel(): JSX.Element {
         <Alert
           type="warning"
           showIcon
-          message="请先选择连接和索引"
+          message="请先选择连接和资源，并等待导出能力就绪"
           style={{ marginBottom: 16 }}
         />
       ) : null}
@@ -244,12 +254,12 @@ export default function ExportPanel(): JSX.Element {
               onChange={(e) => setFormat(e.target.value as ExportFormat)}
             >
               <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                {(Object.keys(FORMAT_HINTS) as ExportFormat[]).map((k) => (
+                {(Object.keys(FORMAT_HINTS) as ExportFormat[]).filter((k) => !solr || k !== 'ndjson').map((k) => (
                   <Radio key={k} value={k}>
                     <Space size={6} align="baseline">
                       <Text strong>{FORMAT_HINTS[k].label}</Text>
                       <Text type="secondary" style={{ fontSize: 12 }}>
-                        {FORMAT_HINTS[k].description}
+                        {solr && k === 'json' ? '导出为文档字段组成的 JSON 数组，保留 Schema uniqueKey。' : solr && k === 'csv' ? '导出文档字段，嵌套对象和数组会被 JSON 字符串化，使用 UTF-8 BOM。' : FORMAT_HINTS[k].description}
                       </Text>
                     </Space>
                   </Radio>
@@ -288,8 +298,8 @@ export default function ExportPanel(): JSX.Element {
               type="secondary"
               style={{ fontSize: 12, marginBottom: 0 }}
             >
-              当前 MVP：固定使用 <Text code>match_all</Text> 拉取该索引全部文档，
-              按 <Text code>_doc</Text> 顺序截取前 N 条。不支持自定义 DSL 或 Scroll。
+              {solr ? <>使用 <Text code>q=*:*</Text> 查询全部文档，以 Schema uniqueKey 排序并通过 cursorMark 分批导出。</> : <>使用 <Text code>match_all</Text> 查询全部文档并分批导出。</>}
+              最多导出前 N 条。
             </Paragraph>
           </Form.Item>
 
@@ -331,6 +341,8 @@ export default function ExportPanel(): JSX.Element {
                   <CheckCircleOutlined style={{ color: '#52c41a' }} />
                 ) : progress.stage === 'failed' ? (
                   <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                ) : progress.stage === 'cancelled' ? (
+                  <StopOutlined />
                 ) : (
                   <LoadingOutlined />
                 )}

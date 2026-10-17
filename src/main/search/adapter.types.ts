@@ -1,8 +1,8 @@
 /**
  * Search Engine Adapter interface.
  *
- * V0.3.0 §5.1: this is the single contract every adapter must satisfy.
- *  The business service layer (`src/main/services/*.service.ts`) talks
+ * The base contract is the minimum every adapter must satisfy. The
+ * business service layer (`src/main/services/*.service.ts`) talks
  *  to adapters only through this interface — it never imports a
  *  concrete `src/main/adapters/<engine>/*` file.
  *
@@ -50,6 +50,8 @@ import type {
   SearchEngineServerInfo,
   SearchIndexInfo
 } from '../../shared/searchEngine'
+import type { SearchEngineManifest, SearchEngineCapabilities, SearchResourceInfo, SearchQueryInput, SearchQueryResult, SearchSchemaResult, CommitPolicy, SearchQueryLanguage } from '../../shared/searchEngine'
+import { SearchEngineError } from './errors'
 
 /** Re-export the IPC result / data types that concrete adapters need
  *  to satisfy `SearchEngineAdapter`. Keeps adapter files from importing
@@ -69,14 +71,13 @@ export type {
 // pull URL / auth out of it without re-asking the service layer.
 //
 // Import / Export deliberately do NOT carry file paths or format
-// strings here. Per V0.3.0 §9.5, file IO + format parsing live in the
-// service layer; the adapter only sees pre-parsed rows (import) or
-// pure numeric knobs (export).
+// strings here. File IO + format parsing live in the service layer; the
+// adapter only sees pre-parsed rows (import) or pure numeric knobs (export).
 
 export type DocumentSearchInput = Omit<
   DocumentSearchRequest,
   'connectionId'
->
+> & { signal?: AbortSignal }
 
 export type DocumentCreateInput = Omit<
   DocumentWriteRequest,
@@ -108,6 +109,8 @@ export interface ImportRow {
 }
 
 export interface ImportInput {
+  signal?: AbortSignal
+  commitPolicy?: CommitPolicy
   index: string
   rows: ImportRow[]
   mode: ImportMode
@@ -125,6 +128,8 @@ export interface ImportInput {
 }
 
 export interface ExportInput {
+  signal?: AbortSignal
+  queryLanguage?: SearchQueryLanguage
   index: string
   /** Caller-clamped upper bound on how many hits to return. */
   maxRows: number
@@ -152,6 +157,13 @@ export interface ImportResult {
   success: number
   failed: number
   failures: ImportFailure[]
+  /**
+   * Whether a replace import has performed its destructive clear. Adapters
+   * that validate rows before clearing may return false and keep the service
+   * in replace mode for the next batch. Omitting the marker preserves the
+   * legacy contract where the first adapter call owns replacement.
+   */
+  replaceApplied?: boolean
 }
 
 /** Engine-native shape for the export result. The service formats +
@@ -164,7 +176,9 @@ export interface ExportResult {
 
 /* ----------------------------- Adapter ----------------------------- */
 
-export interface SearchEngineAdapter {
+export interface BaseSearchEngineAdapter {
+  manifest: SearchEngineManifest
+  getCapabilities(connection?: SearchConnection): SearchEngineCapabilities | Promise<SearchEngineCapabilities>
   /** Stable identifier — matches `SearchConnection.engineType`. */
   type: SearchConnection['engineType']
   /** Human-readable name for UI labels, e.g. "Elasticsearch". */
@@ -180,6 +194,18 @@ export interface SearchEngineAdapter {
    *  throw for non-network errors: surface them as `reachable: false`
    *  with a human-readable `message` instead. */
   testConnection(connection: SearchConnection): Promise<ConnectionTestResult>
+}
+
+export interface ResourceCatalogCapability {
+  listResources(connection: SearchConnection): Promise<SearchResourceInfo[]>
+}
+export interface SchemaCapability {
+  getSchema(connection: SearchConnection, resourceName: string): Promise<SearchSchemaResult>
+}
+export interface DocumentQueryCapability {
+  queryDocuments(connection: SearchConnection, input: SearchQueryInput): Promise<SearchQueryResult>
+}
+export interface IndexManagementCapability {
 
   getClusterInfo(connection: SearchConnection): Promise<ClusterInfo>
 
@@ -203,6 +229,8 @@ export interface SearchEngineAdapter {
     connection: SearchConnection,
     input: DocumentSearchInput
   ): Promise<DocumentSearchResult>
+}
+export interface DocumentWriteCapability {
 
   createDocument(
     connection: SearchConnection,
@@ -218,6 +246,8 @@ export interface SearchEngineAdapter {
     connection: SearchConnection,
     input: DocumentDeleteInput
   ): Promise<DocumentDeleteResult>
+}
+export interface IndexLifecycleCapability {
 
   createIndex(
     connection: SearchConnection,
@@ -271,7 +301,8 @@ export interface SearchEngineAdapter {
     mapping: Record<string, unknown>
   ): Promise<DeleteIndexResult>
 
-  /* ----------- V0.3.12: 索引维护 ----------- */
+}
+export interface IndexMaintenanceCapability {
 
   /** `POST /{index}/_refresh`，使最近写入对搜索可见。 */
   refreshIndex(
@@ -299,7 +330,8 @@ export interface SearchEngineAdapter {
     indexName: string
   ): Promise<IndexMaintenanceResult>
 
-  /* ----------- V0.3.4 A-4: alias management ----------- */
+}
+export interface AliasCapability {
 
   listAliases(connection: SearchConnection): Promise<AliasListResult>
 
@@ -315,7 +347,8 @@ export interface SearchEngineAdapter {
     aliasName: string
   ): Promise<AliasModifyResult>
 
-  /* ----------- V0.3.4 A-5: index templates ----------- */
+}
+export interface TemplateCapability {
 
   listIndexTemplates(
     connection: SearchConnection
@@ -339,6 +372,9 @@ export interface SearchEngineAdapter {
     legacy?: boolean
   ): Promise<IndexTemplateModifyResult>
 
+}
+export interface BulkTransferCapability {
+  exportBatches(connection: SearchConnection, input: ExportInput): AsyncIterable<DocumentHit[]>
   importDocuments(
     connection: SearchConnection,
     input: ImportInput
@@ -349,7 +385,8 @@ export interface SearchEngineAdapter {
     input: ExportInput
   ): Promise<ExportResult>
 
-  /* ----------- V0.3.9 E-7: shard management ----------- */
+}
+export interface ShardCapability {
 
   /** Read the shard table for a single index. Returns one row per
    *  shard (primary + each replica). Pure read; safe to call on
@@ -382,4 +419,122 @@ export interface SearchEngineAdapter {
     node: string,
     allowPrimary?: boolean
   ): Promise<ShardRerouteResult>
+}
+
+export interface TaskCapability {
+  executeTask(connection: SearchConnection, input: Omit<import('../../shared/ipc').EngineTaskRequest, 'connectionId'>): Promise<import('../../shared/ipc').EngineTaskResult>
+  getTask(connection: SearchConnection, taskId: string): Promise<import('../../shared/ipc').EngineTaskResult>
+  cancelTask(connection: SearchConnection, taskId: string): Promise<import('../../shared/ipc').EngineTaskResult>
+}
+export type AdapterOperations = ResourceCatalogCapability & SchemaCapability & DocumentQueryCapability & DocumentWriteCapability & IndexManagementCapability & IndexLifecycleCapability & IndexMaintenanceCapability & AliasCapability & TemplateCapability & BulkTransferCapability & ShardCapability & TaskCapability
+export type SearchEngineAdapter = BaseSearchEngineAdapter & Partial<AdapterOperations>
+
+type CapabilityName = Exclude<keyof SearchEngineCapabilities, 'versionFeatures'>
+
+/**
+ * Runtime capability gates for adapter methods. The registry validates that a
+ * declared `true` capability has the corresponding method, but that check is
+ * intentionally only an initialization check. Adapters can report narrower
+ * capabilities after detecting a particular server version, so every service
+ * invocation must check the resolved connection capabilities as well.
+ *
+ * Keep this map engine-neutral: it describes product operations and the
+ * capability that authorizes them, never an engine endpoint or URL shape.
+ */
+const operationCapabilities: Record<keyof AdapterOperations, CapabilityName[]> = {
+  listResources: ['resourceCatalog'],
+  getSchema: ['schema'],
+  queryDocuments: ['documentQuery'],
+  searchDocuments: ['documentQuery'],
+  getClusterInfo: ['indexManagement'],
+  getClusterHealth: ['indexManagement'],
+  listIndices: ['resourceCatalog', 'indices'],
+  getIndexMapping: ['schema', 'mappings'],
+  getIndexSettings: ['indexManagement', 'settings'],
+  createDocument: ['documentWrite'],
+  updateDocument: ['documentWrite'],
+  deleteDocument: ['documentWrite'],
+  createIndex: ['indexManagement', 'indices'],
+  deleteIndex: ['indexManagement', 'indices'],
+  closeIndex: ['indexManagement', 'openCloseIndex'],
+  openIndex: ['indexManagement', 'openCloseIndex'],
+  updateIndexSettings: ['indexManagement', 'settings'],
+  updateIndexMapping: ['indexManagement', 'mappings'],
+  refreshIndex: ['indexManagement', 'maintenance'],
+  flushIndex: ['indexManagement', 'maintenance'],
+  forceMergeIndex: ['indexManagement', 'maintenance'],
+  clearIndexCache: ['indexManagement', 'maintenance'],
+  listAliases: ['indexManagement', 'aliases'],
+  addAlias: ['indexManagement', 'aliases'],
+  deleteAlias: ['indexManagement', 'aliases'],
+  listIndexTemplates: ['indexManagement', 'indexTemplates'],
+  getIndexTemplate: ['indexManagement', 'indexTemplates'],
+  createIndexTemplate: ['indexManagement', 'indexTemplates'],
+  deleteIndexTemplate: ['indexManagement', 'indexTemplates'],
+  importDocuments: ['bulkTransfer', 'importExport'],
+  exportDocuments: ['bulkTransfer', 'importExport'],
+  exportBatches: ['bulkTransfer', 'importExport'],
+  listIndexShards: ['indexManagement', 'shardManagement'],
+  relocateShard: ['indexManagement', 'shardManagement'],
+  cancelShardAllocation: ['indexManagement', 'shardManagement'],
+  executeTask: ['tasks'],
+  getTask: ['tasks'],
+  cancelTask: ['tasks']
+}
+
+function unsupported(adapter: SearchEngineAdapter, operation: keyof AdapterOperations): SearchEngineError {
+  return new SearchEngineError({
+    engineType: adapter.type,
+    code: 'unsupported_capability',
+    message: adapter.displayName + ' 不支持此操作: ' + operation
+  })
+}
+
+async function assertOperationCapability(
+  adapter: SearchEngineAdapter,
+  operation: keyof AdapterOperations,
+  connection: SearchConnection,
+  input: unknown
+): Promise<void> {
+  // Production adapters implement the base method. Keeping a manifest
+  // fallback makes legacy in-process test doubles safe while still enforcing
+  // every capability they explicitly declare.
+  const declaredCapabilities = adapter.manifest?.capabilities as SearchEngineCapabilities | undefined
+  const capabilities = typeof adapter.getCapabilities === 'function'
+    ? await adapter.getCapabilities(connection)
+    : declaredCapabilities
+  if (!capabilities) return
+  const required = operationCapabilities[operation]
+  // Task operation names are product-level capabilities too. A server may
+  // expose task polling while disabling reindex or query mutation.
+  if (operation === 'executeTask' && input && typeof input === 'object') {
+    const taskOperation = (input as { operation?: unknown }).operation
+    if (taskOperation === 'reindex' && capabilities.reindex !== true) throw unsupported(adapter, operation)
+    if ((taskOperation === 'updateByQuery' || taskOperation === 'deleteByQuery') && capabilities.queryMutation !== true) {
+      throw unsupported(adapter, operation)
+    }
+  }
+  if (required.some(capability => capabilities[capability] !== true)) throw unsupported(adapter, operation)
+}
+
+/** Resolve an optional operation explicitly; no engine must supply fake stubs.
+ * The returned function performs the capability check immediately before the
+ * underlying call, so version-derived capability changes cannot be bypassed
+ * by services that already hold a method reference. */
+export function requireOperation<K extends keyof AdapterOperations>(adapter: SearchEngineAdapter, operation: K): AdapterOperations[K] {
+  const method = adapter[operation]
+  if (typeof method !== 'function') throw unsupported(adapter, operation)
+  // Preserve streaming and backpressure: exportBatches returns an iterable,
+  // while every other operation in the contract returns a Promise.
+  if (operation === 'exportBatches') {
+    return (async function* (...args: [SearchConnection, ExportInput]) {
+      await assertOperationCapability(adapter, operation, args[0], args[1])
+      yield* Reflect.apply(method, adapter, args) as AsyncIterable<DocumentHit[]>
+    }) as unknown as AdapterOperations[K]
+  }
+  return (async (...args: unknown[]) => {
+    const connection = args[0] as SearchConnection
+    await assertOperationCapability(adapter, operation, connection, args[1])
+    return Reflect.apply(method, adapter, args)
+  }) as AdapterOperations[K]
 }

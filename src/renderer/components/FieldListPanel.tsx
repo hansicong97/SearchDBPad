@@ -93,6 +93,11 @@ export default function FieldListPanel(): JSX.Element {
               multi-field
             </Tag>
           ) : null}
+          {record.isUniqueKey ? (
+            <Tag color="gold" style={{ marginLeft: 8 }}>
+              uniqueKey
+            </Tag>
+          ) : null}
         </Tooltip>
       )
     },
@@ -102,6 +107,19 @@ export default function FieldListPanel(): JSX.Element {
       key: 'type',
       width: 140,
       render: (v: string) => <Tag color={typeColor(v)}>{v}</Tag>
+    },
+    {
+      title: 'Schema 属性',
+      key: 'schema-meta',
+      width: 220,
+      render: (_, record) => (
+        <Space size={4} wrap>
+          {record.required ? <Tag color="red">required</Tag> : null}
+          {record.multiValued ? <Tag color="cyan">multi-valued</Tag> : null}
+          {record.stored ? <Tag color="green">stored</Tag> : null}
+          {record.required === false ? <Text type="secondary">optional</Text> : null}
+        </Space>
+      )
     }
   ]
 
@@ -138,7 +156,7 @@ export default function FieldListPanel(): JSX.Element {
       ) : fields.length === 0 ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description="该索引没有 mapping 字段（可能尚未定义 mapping）"
+          description="该资源没有可展示的 Schema / mapping 字段"
         />
       ) : (
         <Table<MappingField>

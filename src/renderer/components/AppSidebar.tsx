@@ -55,22 +55,22 @@ import {
 } from '@ant-design/icons'
 import type {
   ConnectionFolder,
-  EsConnection
+  SearchConnection
 } from '@shared/ipc'
 
 const { Text } = Typography
 
 interface Props {
-  data: EsConnection[]
+  data: SearchConnection[]
   folders: ConnectionFolder[]
   loading: boolean
   activeId: string | null
   testingId: string | null
-  onActivate: (conn: EsConnection) => void
+  onActivate: (conn: SearchConnection) => void
   onCreate: () => void
-  onEdit: (conn: EsConnection) => void
-  onDelete: (conn: EsConnection) => void
-  onTest: (conn: EsConnection) => void
+  onEdit: (conn: SearchConnection) => void
+  onDelete: (conn: SearchConnection) => void
+  onTest: (conn: SearchConnection) => void
   onCreateFolder: () => void
   /** V0.3.9 E-4: open the folder modal pre-bound to `parentId`. */
   onCreateSubfolder: (parent: ConnectionFolder) => void
@@ -79,7 +79,7 @@ interface Props {
   /** V0.3.9 E-3: invoked when a connection is dragged into a
    *  folder (or the implicit "未分组" bucket, in which case the
    *  second argument is `null`). */
-  onMoveToFolder: (conn: EsConnection, folderId: string | null) => void
+  onMoveToFolder: (conn: SearchConnection, folderId: string | null) => void
 }
 
 const UNGROUPED_TITLE = '未分组'
@@ -93,7 +93,7 @@ interface Group {
   folderId: string | null
   title: string
   depth: number
-  connections: EsConnection[]
+  connections: SearchConnection[]
   /** Undefined for the implicit bucket (no rename/delete/create). */
   folder?: ConnectionFolder
 }
@@ -135,7 +135,7 @@ export default function AppSidebar({
     const sorted = (xs: ConnectionFolder[]) =>
       [...xs].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 
-    const connectionsByFolder = new Map<string | null, EsConnection[]>()
+    const connectionsByFolder = new Map<string | null, SearchConnection[]>()
     for (const c of data) {
       const key = (c.folderId ?? null) as string | null
       const list = connectionsByFolder.get(key) ?? []
@@ -313,14 +313,14 @@ interface GroupProps {
   draggedConnId: string | null
   isDropTarget: boolean
   folders: ConnectionFolder[]
-  onActivate: (conn: EsConnection) => void
-  onEdit: (conn: EsConnection) => void
-  onDelete: (conn: EsConnection) => void
-  onTest: (conn: EsConnection) => void
+  onActivate: (conn: SearchConnection) => void
+  onEdit: (conn: SearchConnection) => void
+  onDelete: (conn: SearchConnection) => void
+  onTest: (conn: SearchConnection) => void
   onEditFolder: (folder: ConnectionFolder) => void
   onDeleteFolder: (folder: ConnectionFolder) => void
   onCreateSubfolder: (parent: ConnectionFolder) => void
-  onMoveToFolder: (conn: EsConnection, folderId: string | null) => void
+  onMoveToFolder: (conn: SearchConnection, folderId: string | null) => void
   onDragStart: (connId: string) => void
   onDragEnd: () => void
   onDragOver: (e: React.DragEvent<HTMLDivElement>) => void
@@ -453,18 +453,18 @@ function ConnectionGroup({
 }
 
 interface RowProps {
-  conn: EsConnection
+  conn: SearchConnection
   active: boolean
   testing: boolean
   isDragging: boolean
   indent: number
   folders: ConnectionFolder[]
   currentFolderId: string | null
-  onActivate: (conn: EsConnection) => void
-  onEdit: (conn: EsConnection) => void
-  onDelete: (conn: EsConnection) => void
-  onTest: (conn: EsConnection) => void
-  onMoveToFolder: (conn: EsConnection, folderId: string | null) => void
+  onActivate: (conn: SearchConnection) => void
+  onEdit: (conn: SearchConnection) => void
+  onDelete: (conn: SearchConnection) => void
+  onTest: (conn: SearchConnection) => void
+  onMoveToFolder: (conn: SearchConnection, folderId: string | null) => void
   onDragStart: (connId: string) => void
   onDragEnd: () => void
 }
@@ -609,7 +609,7 @@ function ConnectionRow({
 
 function buildRowMenuItems(handlers: {
   testing: boolean
-  conn: EsConnection
+  conn: SearchConnection
   currentFolderId: string | null
   folders: ConnectionFolder[]
   onTest: () => void

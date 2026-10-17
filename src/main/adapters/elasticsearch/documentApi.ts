@@ -33,6 +33,7 @@ interface EsSearchResponse {
       _id?: string
       _score?: number | null
       _source?: Record<string, unknown> | null
+      sort?: unknown[]
     }>
   }
 }
@@ -42,6 +43,20 @@ interface EsIndexResponse {
   _id?: string
   _version?: number
   result?: string
+}
+
+/** Keep a resource name in one URL segment. Bare dot segments must be rejected
+ *  because URL parsers normalize them even when percent-encoded. */
+function indexPath(index: string): string {
+  if (typeof index !== 'string' || !index || index === '.' || index === '..') {
+    throw new TypeError('Invalid index name')
+  }
+  return encodeURIComponent(index)
+}
+
+function documentIdPath(id: string): string {
+  if (typeof id !== 'string' || !id || id === '.' || id === '..') throw new TypeError('Invalid document ID')
+  return encodeURIComponent(id)
 }
 
 function readTotal(
@@ -67,10 +82,10 @@ function hitFromRaw(
   fallbackIndex: string
 ): DocumentHit {
   return {
-    _id: h._id ?? '',
-    _index: h._index ?? fallbackIndex,
-    _score: typeof h._score === 'number' ? h._score : null,
-    _source: (h._source ?? null) as Record<string, unknown> | null
+    id: h._id,
+    fields: h._source ?? {},
+    sortValues: h.sort,
+    raw: { ...h, _index: h._index ?? fallbackIndex }
   }
 }
 
@@ -80,8 +95,9 @@ export async function searchDocuments(
 ): Promise<DocumentSearchResult> {
   const response = await elasticsearchRequest<EsSearchResponse>(connection, {
     method: 'POST',
-    path: `/${input.index}/_search`,
-    body: input.query
+    path: `/${indexPath(input.index)}/_search`,
+    body: input.query,
+    signal: input.signal
   })
   const took = typeof response.took === 'number' ? response.took : 0
   const totalInfo = readTotal(response.hits?.total)
@@ -105,8 +121,8 @@ export async function createDocument(
   input: DocumentCreateInput
 ): Promise<DocumentWriteResult> {
   const path = input.id
-    ? `/${input.index}/_doc/${encodeURIComponent(input.id)}`
-    : `/${input.index}/_doc`
+    ? `/${indexPath(input.index)}/_doc/${documentIdPath(input.id)}`
+    : `/${indexPath(input.index)}/_doc`
   const response = await elasticsearchRequest<EsIndexResponse>(connection, {
     method: input.id ? 'PUT' : 'POST',
     path,
@@ -127,7 +143,7 @@ export async function updateDocument(
 ): Promise<DocumentWriteResult> {
   const response = await elasticsearchRequest<EsIndexResponse>(connection, {
     method: 'PUT',
-    path: `/${input.index}/_doc/${encodeURIComponent(input.id)}`,
+    path: `/${indexPath(input.index)}/_doc/${documentIdPath(input.id)}`,
     body: input.source
   })
   return {
@@ -146,7 +162,7 @@ export async function deleteDocument(
   try {
     const response = await elasticsearchRequest<EsIndexResponse>(connection, {
       method: 'DELETE',
-      path: `/${input.index}/_doc/${encodeURIComponent(input.id)}`
+      path: `/${indexPath(input.index)}/_doc/${documentIdPath(input.id)}`
     })
     return {
       connectionId: connection.id,

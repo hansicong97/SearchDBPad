@@ -25,6 +25,15 @@ interface RawAliasResponse {
   }
 }
 
+/** Resource names must stay in one path segment; URL parsers normalize bare
+ *  dot segments, which are not valid Elasticsearch index or alias names. */
+function resourcePath(name: string): string {
+  if (typeof name !== 'string' || !name || name === '.' || name === '..') {
+    throw new TypeError('Invalid index or alias name')
+  }
+  return encodeURIComponent(name)
+}
+
 function parseAliasResponse(
   connection: SearchConnection,
   raw: unknown
@@ -63,7 +72,7 @@ export async function addAlias(
 ): Promise<AliasModifyResult> {
   await elasticsearchRequest(connection, {
     method: 'PUT',
-    path: `/${indexName}/_alias/${encodeURIComponent(aliasName)}`
+    path: `/${resourcePath(indexName)}/_alias/${resourcePath(aliasName)}`
   })
   return {
     connectionId: connection.id,
@@ -80,7 +89,7 @@ export async function deleteAlias(
 ): Promise<AliasModifyResult> {
   await elasticsearchRequest(connection, {
     method: 'DELETE',
-    path: `/${indexName}/_alias/${encodeURIComponent(aliasName)}`
+    path: `/${resourcePath(indexName)}/_alias/${resourcePath(aliasName)}`
   })
   return {
     connectionId: connection.id,
