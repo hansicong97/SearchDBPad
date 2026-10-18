@@ -19,6 +19,7 @@ import {
   IpcChannels,
   type ApiResponse,
   type AppPlatformResult,
+  type AppOpenSettingsEvent,
   type AppVersionResult,
   type ClusterHealth,
   type ClusterInfo,
@@ -89,6 +90,13 @@ const api = {
     ipcRenderer.invoke(IpcChannels.AppGetVersion) as Promise<AppVersionResult>,
   getPlatform: (): Promise<AppPlatformResult> =>
     ipcRenderer.invoke(IpcChannels.AppGetPlatform) as Promise<AppPlatformResult>,
+  onOpenSettings: (cb: (event: AppOpenSettingsEvent) => void): (() => void) => {
+    const handler = (_event: unknown, event: AppOpenSettingsEvent): void => {
+      if (event?.section === 'appearance') cb(event)
+    }
+    ipcRenderer.on(IpcChannels.AppOpenSettingsEvent, handler)
+    return () => ipcRenderer.removeListener(IpcChannels.AppOpenSettingsEvent, handler)
+  },
 
   connections: {
     list: (): Promise<ApiResponse<SearchConnection[]>> =>

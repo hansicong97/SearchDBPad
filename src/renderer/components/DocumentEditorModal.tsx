@@ -30,6 +30,7 @@ import {
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { useWorkspaceStore } from '../stores/workspace.store'
+import { useThemeStore } from '../stores/theme.store'
 import { useConnectionStore } from '../stores/connection.store'
 import { extractSchemaFields } from '../utils/mappingFields'
 import type { DocumentHit } from '@shared/ipc'
@@ -60,6 +61,7 @@ export default function DocumentEditorModal({
   onClose
 }: DocumentEditorModalProps): JSX.Element {
   const { message } = AntdApp.useApp()
+  const resolvedMode = useThemeStore((s) => s.resolvedMode)
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
   const mapping = useWorkspaceStore((s) => s.mapping)
   const capabilities = useWorkspaceStore((s) => s.capabilities)
@@ -278,7 +280,7 @@ export default function DocumentEditorModal({
               height="320px"
               defaultLanguage="json"
               value={content}
-              theme="vs-dark"
+              theme={resolvedMode === 'dark' ? 'vs-dark' : 'vs'}
               onChange={(v) => setContent(v ?? '')}
               options={{
                 minimap: { enabled: false },

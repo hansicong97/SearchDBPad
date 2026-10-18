@@ -1,8 +1,8 @@
-import React from 'react'
+import React, { useEffect, useLayoutEffect } from 'react'
 import ReactDOM from 'react-dom/client'
 import { ConfigProvider, App as AntdApp, theme as antdTheme } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
-import { useThemeStore } from './stores/theme.store'
+import { startThemeSync, useThemeStore } from './stores/theme.store'
 import App from './App'
 import './styles/global.css'
 
@@ -24,12 +24,14 @@ if (!rootEl) {
  * non-React surface (Monaco, future iframes, OS chrome) can sync.
  */
 function Root(): JSX.Element {
-  const mode = useThemeStore((s) => s.mode)
+  const mode = useThemeStore((s) => s.resolvedMode)
   const isDark = mode === 'dark'
 
-  if (typeof document !== 'undefined') {
+  useEffect(startThemeSync, [])
+
+  useLayoutEffect(() => {
     document.documentElement.dataset.theme = mode
-  }
+  }, [mode])
 
   return (
     <ConfigProvider

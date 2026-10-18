@@ -1,39 +1,68 @@
-/**
- * Theme mode store (UI only).
- *
- * Holds the renderer's light/dark preference and exposes a `toggle()`
- * action. Backed by `zustand/persist` against `localStorage` so the
- * choice survives reloads without a flash of the wrong theme — persist
- * hydrates synchronously before React mounts.
- *
- * `mode === 'dark'` maps to AntD `theme.darkAlgorithm`; everything else
- * uses `theme.defaultAlgorithm`. AntD's `cssVar: true` mode exposes the
- * resulting tokens as `--ant-*` CSS variables so the rest of the app
- * can theme itself purely through `var(--ant-color-...)`.
- */
-
+/** Renderer appearance preference. Only the user's choice is persisted. */
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-export type ThemeMode = 'light' | 'dark'
+export type ThemeMode = 'light' | 'dark' | 'system'
+export type ResolvedThemeMode = Exclude<ThemeMode, 'system'>
 
 interface ThemeState {
   mode: ThemeMode
-  toggle: () => void
+  resolvedMode: ResolvedThemeMode
   setMode: (mode: ThemeMode) => void
+}
+
+const SYSTEM_THEME_QUERY = '(prefers-color-scheme: dark)'
+
+function systemTheme(): ResolvedThemeMode {
+  return typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia(SYSTEM_THEME_QUERY).matches
+    ? 'dark'
+    : 'light'
+}
+
+function resolveTheme(mode: ThemeMode): ResolvedThemeMode {
+  return mode === 'system' ? systemTheme() : mode
 }
 
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set) => ({
-      mode: 'light',
-      toggle: () =>
-        set((s) => ({ mode: s.mode === 'light' ? 'dark' : 'light' })),
-      setMode: (mode) => set({ mode })
+      mode: 'system',
+      resolvedMode: systemTheme(),
+      setMode: (mode) => set({ mode, resolvedMode: resolveTheme(mode) })
     }),
     {
       name: 'sdbp-theme',
-      version: 1
+      version: 1,
+      partialize: (state) => ({ mode: state.mode }),
+      merge: (persisted, current) => {
+        const savedMode = (persisted as { mode?: unknown } | undefined)?.mode
+        const mode = savedMode === 'light' || savedMode === 'dark' || savedMode === 'system'
+          ? savedMode
+          : 'system'
+        return { ...current, mode, resolvedMode: resolveTheme(mode) }
+      }
     }
   )
 )
+
+/** Attach for the root's lifetime; cleanup also handles React StrictMode remounts. */
+export function startThemeSync(): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return () => {}
+  }
+
+  const query = window.matchMedia(SYSTEM_THEME_QUERY)
+  const sync = (): void => {
+    const state = useThemeStore.getState()
+    const resolvedMode = query.matches ? 'dark' : 'light'
+    if (state.mode === 'system' && state.resolvedMode !== resolvedMode) {
+      useThemeStore.setState({ resolvedMode })
+    }
+  }
+
+  query.addEventListener('change', sync)
+  sync()
+  return () => query.removeEventListener('change', sync)
+}

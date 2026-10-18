@@ -2,9 +2,9 @@
 
 > 语言: [English](README.md) | **简体中文**
 
-SearchDBPad 是一个 Windows 优先的搜索引擎数据管理桌面客户端。0.4.0 已通过统一的能力模型内置 Elasticsearch、OpenSearch 和 Solr adapter。Elasticsearch / OpenSearch 使用 DSL 查询工作流，Solr 使用 Collection、Schema 以及原生 `q` / `fq` / `sort` 查询参数。
+SearchDBPad 是一个 Windows 优先的搜索引擎数据管理桌面客户端。0.4.1 通过统一的能力模型内置 Elasticsearch、OpenSearch 和 Solr adapter。Elasticsearch / OpenSearch 使用 DSL 查询工作流，Solr 使用 Collection、Schema 以及原生 `q` / `fq` / `sort` 查询参数。
 
-Windows x64 安装版和便携版可在 [GitHub Release v0.4.0](https://github.com/hansicong97/SearchDBPad/releases/tag/v0.4.0) 下载；发布说明列出了验证范围与已知限制。
+Windows x64 安装版和便携版可在 [GitHub Release v0.4.1](https://github.com/hansicong97/SearchDBPad/releases/tag/v0.4.1) 下载；发布说明列出了验证范围与已知限制。
 
 项目长期目标是通过统一的桌面体验支持 Elasticsearch、Solr 等主流搜索引擎。
 
@@ -22,6 +22,7 @@ macOS 支持已列入路线图，暂未实装。详见 [路线图](#路线图)�
 - **导出** — 按 manifest 支持的 JSON / NDJSON / CSV 导出到指定文件（CSV 带 UTF-8 BOM，Excel 友好）
 - **导入** — 按 manifest 支持的 JSON / NDJSON / CSV，支持有限批次、进度、取消和预览
 - **本地化 UI** — Ant Design `zhCN` 文案，对话框与提示信息均为中文
+- **外观设置** — “文件 → 设置”可选择浅色、深色或跟随系统，并保存偏好；工作区直接从原生菜单下方开始。详见 [v0.4.1 发布说明](docs/releases/v0.4.1.md)。
 
 ## 技术栈
 
@@ -110,6 +111,8 @@ npm run dist:portable
 `src/renderer/index.html` 里有个 `<!--CSP-->` 占位符，由 Vite 插件（`vite.config.ts` → `cspPlugin`）替换：dev 模式下用宽松 CSP（允许 `http://localhost:5173` + `ws://localhost:5173` 的 HMR），生产构建用严格 CSP。**不要在 `index.html` 里硬编码 `<meta http-equiv="Content-Security-Policy">`** — 这个标签由插件统一管理。
 
 ## 路线图
+
+产品讨论草案（尚未确定为发布范围）：[后续候选方向](docs/plans/2026-10-18-product-directions.md)与[查询工作台升级](docs/plans/2026-10-18-query-workbench-discussion.md)。两份草案目前以中文编写，分别标明已核实实现、建议行为和待讨论决策。
 
 产品范围说明见 [`SEARCHDBPad_CLIENT_PLAN.md`](SEARCHDBPad_CLIENT_PLAN.md)。当前与后续版本文档在工作区存在 `ai-dev-steps/` 时按以下目录组织：
 

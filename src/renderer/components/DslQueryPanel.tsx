@@ -56,6 +56,7 @@ import Editor from '@monaco-editor/react'
 import JsonView from './JsonView'
 import DslFavoriteModal from './DslFavoriteModal'
 import { useWorkspaceStore } from '../stores/workspace.store'
+import { useThemeStore } from '../stores/theme.store'
 import type { DocumentHit, DslFavorite } from '@shared/ipc'
 import type { DslTab } from '../stores/workspace.store'
 
@@ -146,6 +147,7 @@ function RenamePopover({
 
 export default function DslQueryPanel(): JSX.Element {
   const { message } = AntdApp.useApp()
+  const resolvedMode = useThemeStore((s) => s.resolvedMode)
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
   const selectedIndex = useWorkspaceStore((s) => s.selectedIndex)
   const dslTabs = useWorkspaceStore((s) => s.dslTabs)
@@ -414,7 +416,7 @@ export default function DslQueryPanel(): JSX.Element {
                 height="220px"
                 defaultLanguage="json"
                 value={activeTab.dsl}
-                theme="vs-dark"
+                theme={resolvedMode === 'dark' ? 'vs-dark' : 'vs'}
                 onChange={(v) =>
                   updateDslTabContent(activeTab.id, v ?? '')
                 }

@@ -31,6 +31,7 @@ import {
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { useWorkspaceStore } from '../stores/workspace.store'
+import { useThemeStore } from '../stores/theme.store'
 
 // Side-effect import — wires Monaco workers + loader config before
 // the editor is rendered, identical to DslQueryPanel.
@@ -52,6 +53,7 @@ export default function SettingsEditorModal({
   onClose
 }: Props): JSX.Element {
   const { message } = AntdApp.useApp()
+  const resolvedMode = useThemeStore((s) => s.resolvedMode)
   const activeConnectionId = useWorkspaceStore((s) => s.activeConnectionId)
   const settings = useWorkspaceStore((s) => s.settings)
   const updateIndexSettings = useWorkspaceStore((s) => s.updateIndexSettings)
@@ -215,7 +217,7 @@ export default function SettingsEditorModal({
             <Editor
               height="360px"
               defaultLanguage="json"
-              theme="vs"
+              theme={resolvedMode === 'dark' ? 'vs-dark' : 'vs'}
               value={text}
               onChange={(v) => setText(v ?? '')}
               options={{

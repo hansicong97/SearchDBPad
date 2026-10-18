@@ -9,8 +9,8 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { App as AntdApp, Layout, Space, Tag, Typography } from 'antd'
-import AppHeader from './components/AppHeader'
 import AppSidebar from './components/AppSidebar'
+import SettingsModal from './components/SettingsModal'
 import ConnectionForm, {
   type ConnectionFormValues
 } from './components/ConnectionForm'
@@ -65,9 +65,10 @@ function App(): JSX.Element {
   // picked up.
   const fetchDslFavorites = useWorkspaceStore((s) => s.fetchDslFavorites)
 
-  const themeMode = useThemeStore((s) => s.mode)
+  const themeMode = useThemeStore((s) => s.resolvedMode)
   const isDark = themeMode === 'dark'
 
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [editing, setEditing] = useState<SearchConnection | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -92,6 +93,10 @@ function App(): JSX.Element {
     // V0.3.5 B-4: prime the DSL favorites list at app start.
     void fetchDslFavorites()
   }, [fetchConnections, fetchFolders, fetchDslFavorites])
+
+  useEffect(() => {
+    return window.searchApi.onOpenSettings(() => setSettingsOpen(true))
+  }, [])
 
   useEffect(() => {
     if (error) message.error(error)
@@ -284,8 +289,7 @@ function App(): JSX.Element {
 
   return (
     <Layout style={{ height: '100%', overflow: 'hidden' }}>
-      <AppHeader />
-      <Layout style={{ height: '100%', overflow: 'hidden' }}>
+      <Layout style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
         <Sider
           width={260}
           theme={isDark ? 'dark' : 'light'}
@@ -344,6 +348,8 @@ function App(): JSX.Element {
           )}
         </Space>
       </Footer>
+
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
       <ConnectionForm
         open={formOpen}

@@ -30,6 +30,7 @@ import type {
 export const IpcChannels = {
   AppGetVersion: 'app:getVersion',
   AppGetPlatform: 'app:getPlatform',
+  AppOpenSettingsEvent: 'app:openSettings',
 
   /* Connection management (phase 2) */
   ConnectionList: 'connection:list',
@@ -141,6 +142,11 @@ export interface AppVersionResult {
 export interface AppPlatformResult {
   platform: NodeJS.Platform
   arch: string
+}
+
+/** Main-to-renderer notification from the native File > Settings menu. */
+export interface AppOpenSettingsEvent {
+  section: 'appearance'
 }
 
 /* ------------------- Connection types (phase 2) ------------------- */

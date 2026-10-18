@@ -2,9 +2,9 @@
 
 > Languages: **English** | [简体中文](README.zh-CN.md)
 
-SearchDBPad is a Windows-first desktop client for search-engine data management. Version 0.4.0 ships built-in Elasticsearch, OpenSearch, and Solr adapters behind a shared capability model. Elasticsearch and OpenSearch expose DSL-oriented workflows; Solr uses collection/schema metadata and native `q`/`fq`/`sort` query parameters.
+SearchDBPad is a Windows-first desktop client for search-engine data management. Version 0.4.1 includes built-in Elasticsearch, OpenSearch, and Solr adapters behind a shared capability model. Elasticsearch and OpenSearch expose DSL-oriented workflows; Solr uses collection/schema metadata and native `q`/`fq`/`sort` query parameters.
 
-Download the Windows x64 installer or portable build from [GitHub Release v0.4.0](https://github.com/hansicong97/SearchDBPad/releases/tag/v0.4.0). Release notes include the verification scope and known limitations.
+Download the Windows x64 installer or portable build from [GitHub Release v0.4.1](https://github.com/hansicong97/SearchDBPad/releases/tag/v0.4.1). Release notes include the verification scope and known limitations.
 
 Built on Electron + React + TypeScript with a three-process architecture (main / preload / renderer) and `contextIsolation: true`, `nodeIntegration: false` as the security baseline.
 
@@ -20,6 +20,7 @@ macOS support is on the roadmap but not yet wired up. See [Roadmap](#roadmap).
 - **Export** — manifest-supported JSON / NDJSON / CSV to a file you pick (UTF-8 BOM CSV for Excel compatibility)
 - **Import** — manifest-supported JSON / NDJSON / CSV, with bounded batches, progress, cancellation, and preview
 - **Localized UI** — Ant Design `zhCN` locale, dialogs and messages in Chinese
+- **Appearance settings** — File → Settings offers light, dark, and system themes with a saved preference; the workspace starts directly below the native menu. See the [v0.4.1 release notes](docs/releases/v0.4.1.md).
 
 ## Tech stack
 
@@ -108,6 +109,8 @@ npm run dist:portable
 A `<!--CSP-->` placeholder in `src/renderer/index.html` is replaced by a Vite plugin (`vite.config.ts` → `cspPlugin`) with a permissive CSP in dev and a strict CSP in the production build. Do not hard-code a `<meta http-equiv="Content-Security-Policy">` in `index.html` — the plugin owns it.
 
 ## Roadmap
+
+Product discussion drafts (not committed release scope): [candidate directions](docs/plans/2026-10-18-product-directions.md) and [query workbench upgrade](docs/plans/2026-10-18-query-workbench-discussion.md). Both drafts are currently in Chinese and separate verified implementation from proposed behavior and open decisions.
 
 The product scope is documented in [`SEARCHDBPad_CLIENT_PLAN.md`](SEARCHDBPad_CLIENT_PLAN.md). Current and future version work is organized under `ai-dev-steps/` when that directory is present in the checkout:
 

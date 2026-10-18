@@ -20,6 +20,7 @@ import path from 'node:path'
 import { IpcChannels } from '../shared/ipc'
 import type {
   ApiResponse,
+  AppOpenSettingsEvent,
   ExportCancelRequest,
   ExportCancelResult,
   ExportPickPathRequest,
@@ -550,6 +551,17 @@ function buildAppMenu(dev: boolean): Menu {
     {
       label: '文件',
       submenu: [
+        {
+          id: 'settings',
+          label: '设置…',
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+            if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return
+            const event: AppOpenSettingsEvent = { section: 'appearance' }
+            win.webContents.send(IpcChannels.AppOpenSettingsEvent, event)
+          }
+        },
+        { type: 'separator' },
         {
           label: '退出',
           accelerator: 'CmdOrCtrl+Q',
